@@ -15,94 +15,94 @@ struct DocumentLibraryView: View {
     @State private var lastProcessedSummary: ProcessingSummary?
     
     var body: some View {
-        NavigationView {
-            List {
-                Section(header: Text("Knowledge Base")) {
-                    if ragService.documents.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "doc.text.magnifyingglass")
-                                .font(.system(size: 48))
-                                .foregroundColor(.secondary)
-                            Text("No documents added yet")
-                                .font(.headline)
-                            Text("Add PDF, text, or markdown files to build your knowledge base")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
+        List {
+            Section(header: Text("Knowledge Base")) {
+                if ragService.documents.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No documents added yet")
+                            .font(.headline)
+                        Text("Add PDF, text, or markdown files to build your knowledge base")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+                } else {
+                    ForEach(ragService.documents) { document in
+                        NavigationLink(destination: DocumentDetailsView(document: document)) {
+                            DocumentRow(document: document)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
-                    } else {
-                        ForEach(ragService.documents) { document in
-                            NavigationLink(destination: DocumentDetailsView(document: document)) {
-                                DocumentRow(document: document)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    Task {
-                                        try? await ragService.removeDocument(document)
-                                    }
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                Task {
+                                    try? await ragService.removeDocument(document)
                                 }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
                             }
                         }
-                        
-                        Section(footer: Text("\(ragService.totalChunksStored) total chunks stored")) {
-                            EmptyView()
+                    }
+                    
+                    Section(footer: Text("\(ragService.totalChunksStored) total chunks stored")) {
+                        EmptyView()
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Documents")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { showingFilePicker = true }) {
+                    Label("Add Document", systemImage: "plus")
+                }
+                .disabled(ragService.isProcessing)
+            }
+            
+            if !ragService.documents.isEmpty {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(role: .destructive) {
+                        Task {
+                            try? await ragService.clearAllDocuments()
                         }
+                    } label: {
+                        Label("Clear All", systemImage: "trash")
                     }
                 }
             }
-            .navigationTitle("Documents")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingFilePicker = true }) {
-                        Label("Add Document", systemImage: "plus")
-                    }
-                    .disabled(ragService.isProcessing)
-                }
-                
-                if !ragService.documents.isEmpty {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button(role: .destructive) {
-                            Task {
-                                try? await ragService.clearAllDocuments()
-                            }
-                        } label: {
-                            Label("Clear All", systemImage: "trash")
-                        }
-                    }
+        }
+        .sheet(isPresented: $showingFilePicker) {
+            DocumentPicker { url in
+                Task {
+                    try? await ragService.addDocument(at: url)
                 }
             }
-            .sheet(isPresented: $showingFilePicker) {
-                DocumentPicker { url in
-                    Task {
-                        try? await ragService.addDocument(at: url)
-                    }
-                }
+        }
+        .alert("Error Processing Document", isPresented: .constant(ragService.lastError != nil)) {
+            Button("OK", role: .cancel) {
+                ragService.lastError = nil
             }
-            .alert("Error Processing Document", isPresented: .constant(ragService.lastError != nil)) {
-                Button("OK", role: .cancel) {
-                    ragService.lastError = nil
-                }
-            } message: {
-                if let error = ragService.lastError {
-                    Text(error)
-                }
+        } message: {
+            if let error = ragService.lastError {
+                Text(error)
             }
-            .overlay {
-                if ragService.isProcessing {
-                    ProcessingOverlay(status: ragService.processingStatus)
-                }
+        }
+        .overlay {
+            if ragService.isProcessing {
+                ProcessingOverlay(status: ragService.processingStatus)
             }
-            .sheet(isPresented: Binding(
-                get: { ragService.lastProcessingSummary != nil },
-                set: { if !$0 { ragService.lastProcessingSummary = nil } }
-            )) {
-                if let summary = ragService.lastProcessingSummary {
-                    ProcessingSummaryView(summary: summary)
-                }
+        }
+        .sheet(isPresented: Binding(
+            get: { ragService.lastProcessingSummary != nil },
+            set: { if !$0 { ragService.lastProcessingSummary = nil } }
+        )) {
+            if let summary = ragService.lastProcessingSummary {
+                ProcessingSummaryView(summary: summary)
             }
         }
     }
@@ -368,33 +368,33 @@ struct ProcessingSummaryView: View {
                     
                     // File Info Section
                     InfoSection(title: "File Information", icon: "doc.fill", color: .blue) {
-                        InfoRow(label: "File Size", value: summary.fileSize)
-                        InfoRow(label: "Type", value: summary.documentType.rawValue.capitalized)
+                        DetailInfoRow(label: "File Size", value: summary.fileSize)
+                        DetailInfoRow(label: "Type", value: summary.documentType.rawValue.capitalized)
                         if let pageCount = summary.pageCount {
-                            InfoRow(label: "Pages", value: "\(pageCount)")
+                            DetailInfoRow(label: "Pages", value: "\(pageCount)")
                         }
                         if let ocrPages = summary.ocrPagesUsed {
-                            InfoRow(label: "OCR Used", value: "\(ocrPages) pages")
+                            DetailInfoRow(label: "OCR Used", value: "\(ocrPages) pages")
                         }
                     }
                     
                     // Content Statistics Section
                     InfoSection(title: "Content Statistics", icon: "text.alignleft", color: .green) {
-                        InfoRow(label: "Characters", value: String(format: "%,d", summary.totalChars))
-                        InfoRow(label: "Words", value: String(format: "%,d", summary.totalWords))
-                        InfoRow(label: "Chunks Created", value: "\(summary.chunksCreated)")
-                        InfoRow(label: "Avg Chunk Size", value: "\(summary.chunkStats.avgChars) chars")
-                        InfoRow(label: "Size Range", value: "\(summary.chunkStats.minChars) - \(summary.chunkStats.maxChars) chars")
+                        DetailInfoRow(label: "Characters", value: String(format: "%,d", summary.totalChars))
+                        DetailInfoRow(label: "Words", value: String(format: "%,d", summary.totalWords))
+                        DetailInfoRow(label: "Chunks Created", value: "\(summary.chunksCreated)")
+                        DetailInfoRow(label: "Avg Chunk Size", value: "\(summary.chunkStats.avgChars) chars")
+                        DetailInfoRow(label: "Size Range", value: "\(summary.chunkStats.minChars) - \(summary.chunkStats.maxChars) chars")
                     }
                     
                     // Performance Section
                     InfoSection(title: "Performance Metrics", icon: "speedometer", color: .orange) {
-                        InfoRow(label: "Extraction Time", value: String(format: "%.2f s", summary.extractionTime))
-                        InfoRow(label: "Chunking Time", value: String(format: "%.3f s", summary.chunkingTime))
-                        InfoRow(label: "Embedding Time", value: String(format: "%.2f s", summary.embeddingTime))
-                        InfoRow(label: "Avg per Chunk", value: String(format: "%.0f ms", (summary.embeddingTime / Double(summary.chunksCreated)) * 1000))
+                        DetailInfoRow(label: "Extraction Time", value: String(format: "%.2f s", summary.extractionTime))
+                        DetailInfoRow(label: "Chunking Time", value: String(format: "%.3f s", summary.chunkingTime))
+                        DetailInfoRow(label: "Embedding Time", value: String(format: "%.2f s", summary.embeddingTime))
+                        DetailInfoRow(label: "Avg per Chunk", value: String(format: "%.0f ms", (summary.embeddingTime / Double(summary.chunksCreated)) * 1000))
                         Divider()
-                        InfoRow(label: "Total Time", value: String(format: "%.2f s", summary.totalTime), highlight: true)
+                        DetailInfoRow(label: "Total Time", value: String(format: "%.2f s", summary.totalTime), highlight: true)
                     }
                 }
                 .padding()
@@ -438,7 +438,9 @@ struct InfoSection<Content: View>: View {
     }
 }
 
-struct InfoRow: View {
+// MARK: - Simple Info Row for Document Details
+
+struct DetailInfoRow: View {
     let label: String
     let value: String
     var highlight: Bool = false

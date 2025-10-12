@@ -51,55 +51,103 @@ class AppleFoundationLLMService: LLMService {
     private let model: SystemLanguageModel
     
     var isAvailable: Bool {
-        return model.isAvailable
+        // Use the detailed availability enum for better diagnostics
+        switch model.availability {
+        case .available:
+            return true
+        case .unavailable:
+            return false
+        }
     }
     
     var modelName: String {
         return "Apple Foundation Model (On-Device)"
     }
     
+    /// Get specific reason why Foundation Models are unavailable (if applicable)
+    var unavailabilityReason: String? {
+        switch model.availability {
+        case .available:
+            return nil
+        case .unavailable(let reason):
+            switch reason {
+            case .deviceNotEligible:
+                return "Device not eligible (requires A17 Pro+ or M-series chip)"
+            case .appleIntelligenceNotEnabled:
+                return "Apple Intelligence not enabled (go to Settings > Apple Intelligence & Siri)"
+            case .modelNotReady:
+                return "Model is downloading or initializing (please wait a moment)"
+            @unknown default:
+                return "Foundation Models unavailable (unknown reason)"
+            }
+        }
+    }
+    
     init() {
+        // SAFETY: Accessing SystemLanguageModel.default can crash if:
+        // 1. Apple Intelligence is not enabled in Settings
+        // 2. The model is still downloading
+        // 3. Device is not eligible
+        // We initialize the model reference but defer session creation until we know it's available
+        
+        print("🔍 Checking Foundation Models availability...")
+        
         // Use the default system language model
         self.model = SystemLanguageModel.default
         
-        guard model.isAvailable else {
+        // Check availability with detailed diagnostics BEFORE creating session
+        switch model.availability {
+        case .available:
+            print("✅ Foundation Models available - creating session...")
+            
+            // Create language model session with hybrid RAG+LLM instructions
+            // This enables BOTH document-based RAG and general conversational AI
+            self.session = LanguageModelSession(
+                model: model,
+                tools: [],
+                instructions: Instructions("""
+                    You are a helpful and friendly AI assistant for a document retrieval system.
+                    
+                    When the user provides document context:
+                    - Analyze the documents and answer questions based on the content
+                    - Cite specific information when relevant
+                    - If the documents don't contain the answer, say so clearly
+                    
+                    When chatting without documents:
+                    - Engage naturally and helpfully
+                    - Answer questions to the best of your ability
+                    - Be conversational and informative
+                    - Respond to greetings, tests, and casual conversation naturally
+                    
+                    For simple inputs like "test", "hello", or single words, respond conversationally to \
+                    confirm you're working. Always be helpful and never refuse to respond unless the \
+                    request is genuinely harmful or inappropriate.
+                    """)
+            )
+            
+            print("✅ Apple Foundation Model initialized")
+            print("   🧠 Hybrid RAG+LLM mode enabled")
+            print("   📚 RAG mode when documents available")
+            print("   💬 General chat mode when no documents")
+            print("   🔒 Zero data retention, end-to-end encrypted")
+            print("   📍 Model: SystemLanguageModel.default")
+            
+        case .unavailable(let reason):
             print("⚠️  Apple Foundation Models not available on this device")
-            print("   💡 Requires iOS 26.0+, A17 Pro / M1 or later")
-            print("   💡 Apple Intelligence must be enabled in Settings")
-            return
+            self.session = nil
+            switch reason {
+            case .deviceNotEligible:
+                print("   ❌ Device not eligible: Requires A17 Pro+ or M-series chip")
+            case .appleIntelligenceNotEnabled:
+                print("   ❌ Apple Intelligence not enabled")
+                print("   💡 Go to Settings > Apple Intelligence & Siri to enable")
+            case .modelNotReady:
+                print("   ⏳ Model downloading or initializing...")
+                print("   💡 Check Settings > General > iPhone Storage for download progress")
+            @unknown default:
+                print("   ❌ Unknown reason")
+            }
         }
-        
-        // Create language model session with hybrid RAG+LLM instructions
-        // This enables BOTH document-based RAG and general conversational AI
-        self.session = LanguageModelSession(
-            model: model,
-            tools: [],
-            instructions: Instructions("""
-                You are a helpful and friendly AI assistant for a document retrieval system.
-                
-                When the user provides document context:
-                - Analyze the documents and answer questions based on the content
-                - Cite specific information when relevant
-                - If the documents don't contain the answer, say so clearly
-                
-                When chatting without documents:
-                - Engage naturally and helpfully
-                - Answer questions to the best of your ability
-                - Be conversational and informative
-                - Respond to greetings, tests, and casual conversation naturally
-                
-                For simple inputs like "test", "hello", or single words, respond conversationally to \
-                confirm you're working. Always be helpful and never refuse to respond unless the \
-                request is genuinely harmful or inappropriate.
-                """)
-        )
-        
-        print("✅ Apple Foundation Model initialized")
-        print("   🧠 Hybrid RAG+LLM mode enabled")
-        print("   📚 RAG mode when documents available")
-        print("   💬 General chat mode when no documents")
-        print("   🔒 Zero data retention, end-to-end encrypted")
-        print("   📍 Model: SystemLanguageModel.default")
     }
     
     func generate(prompt: String, context: String?, config: InferenceConfig) async throws -> LLMResponse {
@@ -137,11 +185,19 @@ class AppleFoundationLLMService: LLMService {
         print("\n━━━ LLM Configuration ━━━")
         print("🌡️  Temperature: \(config.temperature)")
         print("🎯 Max tokens: \(config.maxTokens)")
+        print("🔧 Execution: \(config.executionContext.emoji) \(config.executionContext.description)")
+        print("☁️  PCC Allowed: \(config.allowPrivateCloudCompute ? "Yes" : "No")")
         
-        // Generate response using streaming API
+        // Log PCC permission status (informational only - system handles enforcement)
+        if !config.allowPrivateCloudCompute && config.executionContext != .onDeviceOnly {
+            print("⚠️  Private Cloud Compute disabled by user - system will prefer on-device execution")
+        }
+        
+        // Generate response using streaming API with execution context
         var responseText = ""
         var tokenCount = 0
         var firstTokenTime: TimeInterval?
+        var actualExecutionLocation: String = "Unknown"
         
         let options = GenerationOptions(
             temperature: Double(config.temperature)
@@ -150,13 +206,12 @@ class AppleFoundationLLMService: LLMService {
         print("\n━━━ Starting Generation ━━━")
         print("⏱️  Start time: \(startTime)")
         
-        let responseStream = try session.streamResponse(to: fullPrompt, options: options)
+        let responseStream = session.streamResponse(to: fullPrompt, options: options)
         
         print("📡 Streaming response from Foundation Model...")
         print("📡 Waiting for response snapshots...\n")
         
         var snapshotCount = 0
-        var lastContentLength = 0
         
         for try await snapshot in responseStream {
             snapshotCount += 1
@@ -164,6 +219,18 @@ class AppleFoundationLLMService: LLMService {
             if firstTokenTime == nil {
                 firstTokenTime = Date().timeIntervalSince(startTime)
                 print("⚡ First token received after \(String(format: "%.2f", firstTokenTime!))s")
+                
+                // Detect actual execution location from first token latency
+                // On-device: ~0.1-0.5s, PCC: ~2-4s (includes network roundtrip)
+                if let ttft = firstTokenTime {
+                    if ttft < 1.0 {
+                        actualExecutionLocation = "📱 On-Device"
+                        print("   └─ Detected: On-Device execution (fast response)")
+                    } else {
+                        actualExecutionLocation = "☁️ Private Cloud Compute"
+                        print("   └─ Detected: Private Cloud Compute (network latency)")
+                    }
+                }
             }
             
             // Update response text from snapshot
@@ -188,8 +255,6 @@ class AppleFoundationLLMService: LLMService {
             print("   Full content so far:")
             print("   \"\(responseText)\"")
             print("   ---")
-            
-            lastContentLength = responseText.count
         }
         
         print("\n📊 Stream Statistics:")
@@ -206,6 +271,7 @@ class AppleFoundationLLMService: LLMService {
         print("✅ Total words: \(finalTokenCount)")
         print("✅ Total characters: \(responseText.count)")
         print("⏱️  Total time: \(String(format: "%.2f", totalTime))s")
+        print("📍 Executed on: \(actualExecutionLocation)")
         if let ttft = firstTokenTime {
             print("⚡ Time to first token: \(String(format: "%.2f", ttft))s")
         }

@@ -19,20 +19,93 @@ struct SettingsView: View {
     }
     @AppStorage("openaiAPIKey") private var openaiAPIKey: String = ""
     @AppStorage("openaiModel") private var openaiModel: String = "gpt-4o-mini"
+    @AppStorage("preferPrivateCloudCompute") private var preferPrivateCloudCompute: Bool = false
+    @AppStorage("allowPrivateCloudCompute") private var allowPrivateCloudCompute: Bool = true
+    @AppStorage("executionContext") private var executionContextRaw: String = "automatic"
     @AppStorage("llmTemperature") private var temperature: Double = 0.7
     @AppStorage("llmMaxTokens") private var maxTokens: Int = 500
     @AppStorage("retrievalTopK") private var topK: Int = 3
+    @AppStorage("enableFirstFallback") private var enableFirstFallback: Bool = true
+    @AppStorage("enableSecondFallback") private var enableSecondFallback: Bool = true
+    @AppStorage("firstFallbackModel") private var firstFallbackRaw: String = LLMModelType.onDeviceAnalysis.rawValue
+    @AppStorage("secondFallbackModel") private var secondFallbackRaw: String = LLMModelType.openAIDirect.rawValue
     
     @State private var showingAPIKeyInfo = false
     @State private var isApplyingSettings = false
+    @State private var deviceCapabilities = DeviceCapabilities()
+    @State private var pipelineStages: [ModelPipelineStage] = []
+    
+    private var executionContext: ExecutionContext {
+        get {
+            switch executionContextRaw {
+            case "automatic": return .automatic
+            case "onDeviceOnly": return .onDeviceOnly
+            case "preferCloud": return .preferCloud
+            case "cloudOnly": return .cloudOnly
+            default: return .automatic
+            }
+        }
+        set {
+            switch newValue {
+            case .automatic: executionContextRaw = "automatic"
+            case .onDeviceOnly: executionContextRaw = "onDeviceOnly"
+            case .preferCloud: executionContextRaw = "preferCloud"
+            case .cloudOnly: executionContextRaw = "cloudOnly"
+            }
+        }
+    }
+
+    private var firstFallback: LLMModelType {
+        get { LLMModelType(rawValue: firstFallbackRaw) ?? .onDeviceAnalysis }
+        set { firstFallbackRaw = newValue.rawValue }
+    }
+    
+    private var secondFallback: LLMModelType {
+        get { LLMModelType(rawValue: secondFallbackRaw) ?? .openAIDirect }
+        set { secondFallbackRaw = newValue.rawValue }
+    }
+    
+    private var firstFallbackOptions: [LLMModelType] {
+        LLMModelType.allCases.filter { $0 != selectedModel }
+    }
+    
+    private var secondFallbackOptions: [LLMModelType] {
+        LLMModelType.allCases.filter { $0 != selectedModel && $0 != firstFallback }
+    }
+    
+    private var firstFallbackBinding: Binding<LLMModelType> {
+        Binding(
+            get: { self.firstFallback },
+            set: { self.firstFallbackRaw = $0.rawValue }
+        )
+    }
+    
+    private var secondFallbackBinding: Binding<LLMModelType> {
+        Binding(
+            get: { self.secondFallback },
+            set: { self.secondFallbackRaw = $0.rawValue }
+        )
+    }
     
     var body: some View {
-        NavigationView {
-            Form {
+        Form {
                 // MARK: - AI Model Selection
                 Section {
                     Picker("AI Model", selection: $selectedModel) {
-                        if #available(iOS 18.0, *) {
+                        // Always provide Apple Intelligence tag (conditional label only)
+                        if deviceCapabilities.supportsFoundationModels {
+                            Label {
+                                VStack(alignment: .leading) {
+                                    Text("Apple Foundation Models")
+                                    Text("iOS 26+ on-device + cloud")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "brain.head.profile")
+                            }
+                            .tag(LLMModelType.appleIntelligence)
+                        } else if deviceCapabilities.supportsAppleIntelligence {
                             Label {
                                 VStack(alignment: .leading) {
                                     Text("Apple Intelligence")
@@ -41,23 +114,22 @@ struct SettingsView: View {
                                         .foregroundColor(.secondary)
                                 }
                             } icon: {
-                                Image(systemName: "brain.head.profile")
+                                Image(systemName: "sparkles")
                             }
                             .tag(LLMModelType.appleIntelligence)
-                        }
-                        
-                        if #available(iOS 18.1, *) {
+                        } else {
+                            // Fallback: Always provide tag even when unavailable (for default selection)
                             Label {
                                 VStack(alignment: .leading) {
-                                    Text("ChatGPT")
-                                    Text("Via Apple Intelligence")
+                                    Text("Apple Intelligence")
+                                    Text("Checking availability...")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
                             } icon: {
-                                Image(systemName: "bubble.left.and.bubble.right.fill")
+                                Image(systemName: "sparkles.rectangle.stack")
                             }
-                            .tag(LLMModelType.appleChatGPT)
+                            .tag(LLMModelType.appleIntelligence)
                         }
                         
                         Label {
@@ -74,25 +146,135 @@ struct SettingsView: View {
                         
                         Label {
                             VStack(alignment: .leading) {
-                                Text("Mock (Testing)")
-                                Text("For development")
+                                Text("On-Device Analysis")
+                                Text("No AI model needed - extractive QA")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                         } icon: {
-                            Image(systemName: "hammer.fill")
+                            Image(systemName: "doc.text.magnifyingglass")
                         }
-                        .tag(LLMModelType.mock)
+                        .tag(LLMModelType.onDeviceAnalysis)
                     }
                     .pickerStyle(.navigationLink)
                     
                     // Model details
-                    ModelInfoCard(modelType: selectedModel)
+                    ModelInfoCard(modelType: selectedModel, capabilities: deviceCapabilities)
                     
                 } header: {
                     Text("AI Model")
                 } footer: {
                     Text(modelFooterText)
+                }
+                
+                Section {
+                    Toggle("Enable First Fallback", isOn: $enableFirstFallback)
+                    if enableFirstFallback {
+                        Picker("First Fallback", selection: firstFallbackBinding) {
+                            ForEach(firstFallbackOptions, id: \.self) { option in
+                                Label(option.displayName, systemImage: option.iconName)
+                                    .tag(option)
+                            }
+                        }
+                    }
+                    Toggle("Enable Second Fallback", isOn: $enableSecondFallback)
+                    if enableSecondFallback {
+                        Picker("Second Fallback", selection: secondFallbackBinding) {
+                            ForEach(secondFallbackOptions, id: \.self) { option in
+                                Label(option.displayName, systemImage: option.iconName)
+                                    .tag(option)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Fallback Strategy")
+                } footer: {
+                    Text("Customize the order of model fallbacks. Disabled stages are skipped unless all other stages fail, in which case the app uses on-device analysis to stay responsive.")
+                
+                // MARK: - Private Cloud Compute Settings (iOS 18.1+)
+                if deviceCapabilities.supportsPrivateCloudCompute && 
+                   (selectedModel == .appleIntelligence || deviceCapabilities.supportsFoundationModels) {
+                    Section {
+                        // Master toggle for PCC permission
+                        Toggle(isOn: $allowPrivateCloudCompute) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Allow Private Cloud Compute")
+                                    Image(systemName: allowPrivateCloudCompute ? "checkmark.shield.fill" : "xmark.shield.fill")
+                                        .foregroundColor(allowPrivateCloudCompute ? .green : .orange)
+                                        .font(.caption)
+                                }
+                                Text("Permission to use Apple's secure cloud servers")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        if allowPrivateCloudCompute {
+                            // Granular execution context control
+                            Picker("Execution Strategy", selection: Binding<ExecutionContext>(
+                                get: { executionContext },
+                                set: { newValue in
+                                    switch newValue {
+                                    case .automatic: executionContextRaw = "automatic"
+                                    case .onDeviceOnly: executionContextRaw = "onDeviceOnly"
+                                    case .preferCloud: executionContextRaw = "preferCloud"
+                                    case .cloudOnly: executionContextRaw = "cloudOnly"
+                                    }
+                                    Task { await applySettings() }
+                                }
+                            )) {
+                                ForEach([ExecutionContext.automatic, .onDeviceOnly, .preferCloud, .cloudOnly], id: \.self) { context in
+                                    HStack {
+                                        Text(context.emoji)
+                                        Text(context.description)
+                                    }
+                                    .tag(context)
+                                }
+                            }
+                            .pickerStyle(.navigationLink)
+                            
+                            // Explain current setting
+                            switch executionContext {
+                            case .automatic:
+                                InfoRow(
+                                    icon: "🔄",
+                                    title: "Automatic (Recommended)",
+                                    description: "System decides: on-device for simple queries, cloud for complex ones"
+                                )
+                            case .onDeviceOnly:
+                                InfoRow(
+                                    icon: "📱",
+                                    title: "On-Device Only",
+                                    description: "Never uses cloud. Complex queries may fail or return lower quality."
+                                )
+                            case .preferCloud:
+                                InfoRow(
+                                    icon: "☁️",
+                                    title: "Prefer Cloud",
+                                    description: "Uses PCC when possible for better quality. Falls back to on-device if offline."
+                                )
+                            case .cloudOnly:
+                                InfoRow(
+                                    icon: "🌐",
+                                    title: "Cloud Only",
+                                    description: "Always uses PCC. Requires internet connection."
+                                )
+                            }
+                        }
+                        
+                    } header: {
+                        HStack {
+                            Image(systemName: "cloud.fill")
+                            Text("Execution Location")
+                        }
+                    } footer: {
+                        if allowPrivateCloudCompute {
+                            Text("Private Cloud Compute runs on Apple Silicon servers with cryptographically enforced zero data retention. Your data is never stored, logged, or accessible to Apple.")
+                        } else {
+                            Text("All processing happens on-device. Complex queries may take longer or return lower quality responses.")
+                        }
+                    }
                 }
                 
                 // MARK: - OpenAI Settings (if selected)
@@ -113,8 +295,11 @@ struct SettingsView: View {
                         }
                         
                         Picker("Model", selection: $openaiModel) {
-                            Text("GPT-4o Mini (Fast)").tag("gpt-4o-mini")
+                            Text("GPT-5 (Latest)").tag("gpt-5")
+                            Text("o1 (Reasoning)").tag("o1")
+                            Text("o1-mini (Fast Reasoning)").tag("o1-mini")
                             Text("GPT-4o (Balanced)").tag("gpt-4o")
+                            Text("GPT-4o Mini (Fast)").tag("gpt-4o-mini")
                             Text("GPT-4 Turbo").tag("gpt-4-turbo-preview")
                         }
                         
@@ -212,8 +397,45 @@ struct SettingsView: View {
                     Text("Information")
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
+            .onAppear {
+                // Check device capabilities and refresh pipeline
+                // Perform capability check asynchronously to avoid blocking UI
+                Task {
+                    let caps = RAGService.checkDeviceCapabilities()
+                    await MainActor.run {
+                        deviceCapabilities = caps
+                        refreshModelPipeline()
+                    }
+                }
+            }
+            .onChange(of: selectedModel) {
+                refreshModelPipeline()
+            }
+            .onChange(of: openaiAPIKey) {
+                refreshModelPipeline()
+            }
+            .onChange(of: openaiModel) {
+                refreshModelPipeline()
+            }
+            .onChange(of: enableFirstFallback) {
+                refreshModelPipeline()
+                Task { await applySettings() }
+            }
+            .onChange(of: enableSecondFallback) {
+                refreshModelPipeline()
+                Task { await applySettings() }
+            }
+            .onChange(of: firstFallbackRaw) {
+                refreshModelPipeline()
+                Task { await applySettings() }
+            }
+            .onChange(of: secondFallbackRaw) {
+                refreshModelPipeline()
+                Task { await applySettings() }
+            }
             .alert("OpenAI API Key", isPresented: $showingAPIKeyInfo) {
                 Button("Get API Key") {
                     if let url = URL(string: "https://platform.openai.com/api-keys") {
@@ -224,54 +446,192 @@ struct SettingsView: View {
             } message: {
                 Text("You'll need an OpenAI API key to use OpenAI Direct. Sign up at platform.openai.com to get one. The API is pay-as-you-go.")
             }
-        }
-    }
+        } // Form
+    } // body
     
     private var modelFooterText: String {
         switch selectedModel {
         case .appleIntelligence:
-            return "Apple Intelligence automatically runs on-device for simple queries and seamlessly escalates to Private Cloud Compute for complex ones. Cryptographically enforced privacy with zero data retention."
-        case .appleChatGPT:
-            return "Uses ChatGPT via Apple Intelligence. Requires user consent. Data goes to OpenAI but not stored by Apple."
+            return "Primary: Apple Foundation Models when available. Automatic fallback to On-Device Analysis keeps responses working even if Apple Intelligence is unavailable."
+        case .onDeviceAnalysis:
+            return "Extracts relevant sentences from your documents using NaturalLanguage framework. No AI model needed, works on all devices, 100% private."
         case .openAIDirect:
-            return "Connect directly to OpenAI's API using your own key. You control costs and have access to the latest models."
-        case .mock:
-            return "For testing only. Generates placeholder responses without real AI."
+            return "Primary: OpenAI GPT models using your key. If the API is unavailable, we fall back to On-Device Analysis so the chat never goes silent."
         }
     }
     
+    @MainActor
     private func applySettings() async {
-        let newService: any LLMService
-        
-        switch selectedModel {
+        guard !isApplyingSettings else { return }
+        isApplyingSettings = true
+        defer { isApplyingSettings = false }
+        let newService = buildLLMService()
+        await ragService.updateLLMService(newService)
+        refreshModelPipeline()
+    }
+
+    private func normalizeFallbacks() {
+        if !firstFallbackOptions.contains(firstFallback) {
+            firstFallbackRaw = (firstFallbackOptions.first ?? .onDeviceAnalysis).rawValue
+        }
+        if !secondFallbackOptions.contains(secondFallback) {
+            secondFallbackRaw = (secondFallbackOptions.first ?? .onDeviceAnalysis).rawValue
+        }
+    }
+
+    private func buildLLMService() -> any LLMService {
+        normalizeFallbacks()
+        let preferences = preferredModelPreferences()
+        for preference in preferences where preference.enabled {
+            if let service = instantiateService(for: preference.type) {
+                return service
+            }
+        }
+        return OnDeviceAnalysisService()
+    }
+
+    @MainActor
+    private func refreshModelPipeline() {
+        normalizeFallbacks()
+        let preferences = preferredModelPreferences()
+        var stages: [ModelPipelineStage] = []
+        for (index, preference) in preferences.enumerated() {
+            let role: ModelPipelineStage.Role = index == 0 ? .primary : (preference.userSelected ? .fallback : .optional)
+            switch preference.type {
+            case .appleIntelligence:
+                stages.append(makeFoundationStage(role: role, isEnabled: preference.enabled))
+            case .onDeviceAnalysis:
+                stages.append(makeOnDeviceStage(role: role, isEnabled: preference.enabled))
+            case .openAIDirect:
+                stages.append(makeOpenAIStage(role: role, isEnabled: preference.enabled))
+            }
+        }
+        pipelineStages = stages
+    }
+
+    private func preferredModelPreferences() -> [(type: LLMModelType, enabled: Bool, userSelected: Bool)] {
+        var seen = Set<LLMModelType>()
+        var preferences: [(LLMModelType, Bool, Bool)] = []
+        let primary = (selectedModel, true, true)
+        let first = (firstFallback, enableFirstFallback, true)
+        let second = (secondFallback, enableSecondFallback, true)
+        for entry in [primary, first, second] {
+            if !seen.contains(entry.0) {
+                preferences.append(entry)
+                seen.insert(entry.0)
+            }
+        }
+        let safetyStages: [LLMModelType] = [.onDeviceAnalysis, .appleIntelligence, .openAIDirect]
+        for type in safetyStages where !seen.contains(type) {
+            preferences.append((type, false, false))
+            seen.insert(type)
+        }
+        return preferences
+    }
+
+    private func instantiateService(for type: LLMModelType) -> LLMService? {
+        switch type {
         case .appleIntelligence:
             #if canImport(FoundationModels)
             if #available(iOS 26.0, *) {
-                newService = AppleFoundationLLMService()
-            } else {
-                newService = OnDeviceAnalysisService()
+                let service = AppleFoundationLLMService()
+                return service.isAvailable ? service : nil
             }
-            #else
-            newService = OnDeviceAnalysisService()
             #endif
-            
-        case .appleChatGPT:
-            if #available(iOS 18.1, *) {
-                newService = AppleChatGPTExtensionService()
-            } else {
-                newService = OnDeviceAnalysisService()
-            }
-            
+            return nil
+        case .onDeviceAnalysis:
+            return OnDeviceAnalysisService()
         case .openAIDirect:
-            let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey") ?? ""
-            let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-            newService = OpenAILLMService(apiKey: apiKey, model: model)
-            
-        case .mock:
-            newService = OnDeviceAnalysisService()
+            let trimmedKey = openaiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedKey.isEmpty else { return nil }
+            return OpenAILLMService(apiKey: trimmedKey, model: openaiModel)
         }
-        
-        await ragService.updateLLMService(newService)
+    }
+
+    private func makeFoundationStage(role: ModelPipelineStage.Role, isEnabled: Bool) -> ModelPipelineStage {
+        let detail = "On-device Apple Intelligence with Private Cloud Compute"
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            let isActive = ragService.llmService is AppleFoundationLLMService
+            if isActive {
+                return ModelPipelineStage(name: "Apple Foundation Models", role: role, detail: detail, status: .active, icon: "brain.head.profile")
+            }
+            if !isEnabled {
+                return ModelPipelineStage(name: "Apple Foundation Models", role: role, detail: detail, status: .disabled, icon: "brain.head.profile")
+            }
+            if deviceCapabilities.supportsFoundationModels {
+                return ModelPipelineStage(name: "Apple Foundation Models", role: role, detail: detail, status: .available, icon: "brain.head.profile")
+            }
+            let reason = deviceCapabilities.foundationModelUnavailableReason ?? "Requires supported hardware and iOS 26"
+            return ModelPipelineStage(name: "Apple Foundation Models", role: role, detail: detail, status: .unavailable(reason: reason), icon: "brain.head.profile")
+        }
+        return ModelPipelineStage(name: "Apple Foundation Models", role: role, detail: detail, status: isEnabled ? .unavailable(reason: "Requires iOS 26") : .disabled, icon: "brain.head.profile")
+        #else
+        // When building without iOS 26 SDK, check if Apple Intelligence is available (iOS 18.1+)
+        if !isEnabled {
+            return ModelPipelineStage(name: "Apple Intelligence", role: role, detail: detail, status: .disabled, icon: "brain.head.profile")
+        }
+        if deviceCapabilities.supportsAppleIntelligence {
+            // Apple Intelligence available on iOS 18.1+ with A17 Pro+/M-series
+            let name = "Apple Intelligence"
+            let status: ModelPipelineStage.Status = .requiresConfiguration(detail: "Requires iOS 26 SDK for Foundation Models. Using system Apple Intelligence APIs.")
+            return ModelPipelineStage(name: name, role: role, detail: "Private Cloud Compute + Writing Tools + ChatGPT", status: status, icon: "brain.head.profile")
+        } else if let reason = deviceCapabilities.appleIntelligenceUnavailableReason {
+            return ModelPipelineStage(name: "Apple Intelligence", role: role, detail: detail, status: .unavailable(reason: reason), icon: "brain.head.profile")
+        }
+        return ModelPipelineStage(name: "Apple Intelligence", role: role, detail: detail, status: .unavailable(reason: "Build with iOS 26 SDK to enable Foundation Models"), icon: "brain.head.profile")
+        #endif
+    }
+
+    private func makeOnDeviceStage(role: ModelPipelineStage.Role, isEnabled: Bool) -> ModelPipelineStage {
+        let isActive = ragService.llmService is OnDeviceAnalysisService
+        if isActive {
+            return ModelPipelineStage(name: "On-Device Analysis", role: role, detail: "Runs entirely on-device using NaturalLanguage", status: .active, icon: "doc.text.magnifyingglass")
+        }
+        if !isEnabled {
+            return ModelPipelineStage(name: "On-Device Analysis", role: role, detail: "Runs entirely on-device using NaturalLanguage", status: .disabled, icon: "doc.text.magnifyingglass")
+        }
+        let detail = role == .primary ? "Runs entirely on-device using NaturalLanguage" : "Fallback extractive QA when generative models are unavailable"
+        return ModelPipelineStage(name: "On-Device Analysis", role: role, detail: detail, status: .available, icon: "doc.text.magnifyingglass")
+    }
+
+    private func makeOpenAIStage(role: ModelPipelineStage.Role, isEnabled: Bool) -> ModelPipelineStage {
+        let trimmedKey = openaiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isActive = ragService.llmService is OpenAILLMService
+        if isActive {
+            return ModelPipelineStage(
+                name: "OpenAI Direct",
+                role: role,
+                detail: "Currently configured for \(openaiModel)",
+                status: .active,
+                icon: "key.fill"
+            )
+        }
+        if !isEnabled {
+            return ModelPipelineStage(
+                name: "OpenAI Direct",
+                role: role,
+                detail: "Connect to GPT-4/5 using your API key",
+                status: .disabled,
+                icon: "key.fill"
+            )
+        }
+        if trimmedKey.isEmpty {
+            return ModelPipelineStage(
+                name: "OpenAI Direct",
+                role: role,
+                detail: "Connect to GPT-4/5 using your API key",
+                status: .requiresConfiguration(message: "Add API key to enable"),
+                icon: "key.fill"
+            )
+        }
+        return ModelPipelineStage(
+            name: "OpenAI Direct",
+            role: role,
+            detail: "Currently configured for \(openaiModel)",
+            status: .available,
+            icon: "key.fill"
+        )
     }
 }
 
@@ -279,15 +639,15 @@ struct SettingsView: View {
 
 enum LLMModelType: String, CaseIterable {
     case appleIntelligence = "apple_intelligence"  // On-device + PCC automatic
-    case appleChatGPT = "chatgpt"
+    case onDeviceAnalysis = "on_device_analysis"   // Extractive QA, always works
     case openAIDirect = "openai"
-    case mock = "mock"
 }
 
 // MARK: - Model Info Card
 
 struct ModelInfoCard: View {
     let modelType: LLMModelType
+    let capabilities: DeviceCapabilities
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -313,6 +673,16 @@ struct ModelInfoCard: View {
                     }
                 }
             }
+            
+            if !isAvailable {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.orange)
+                    Text(unavailabilityReason)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
         }
         .padding()
         .background(Color(uiColor: .secondarySystemGroupedBackground))
@@ -322,13 +692,15 @@ struct ModelInfoCard: View {
     private var icon: Image {
         switch modelType {
         case .appleIntelligence:
-            return Image(systemName: "brain.head.profile")
-        case .appleChatGPT:
-            return Image(systemName: "bubble.left.and.bubble.right.fill")
+            if capabilities.supportsFoundationModels {
+                return Image(systemName: "brain.head.profile")
+            } else {
+                return Image(systemName: "sparkles")
+            }
+        case .onDeviceAnalysis:
+            return Image(systemName: "doc.text.magnifyingglass")
         case .openAIDirect:
             return Image(systemName: "key.fill")
-        case .mock:
-            return Image(systemName: "hammer.fill")
         }
     }
     
@@ -359,57 +731,256 @@ struct ModelInfoCard: View {
     private var isAvailable: Bool {
         switch modelType {
         case .appleIntelligence:
-            if #available(iOS 18.0, *) {
-                return true
-            }
-            return false
-        case .appleChatGPT:
-            if #available(iOS 18.1, *) {
-                return true
-            }
-            return false
-        case .openAIDirect, .mock:
+            return capabilities.supportsAppleIntelligence || capabilities.supportsFoundationModels
+        case .onDeviceAnalysis:
             return true
+        case .openAIDirect:
+            return true
+        }
+    }
+    
+    private var unavailabilityReason: String {
+        switch modelType {
+        case .appleIntelligence:
+            if capabilities.supportsAppleIntelligence || capabilities.supportsFoundationModels {
+                return ""
+            }
+            if capabilities.iOSMajor < 18 {
+                return "Requires iOS 18.1 or later"
+            }
+            if let reason = capabilities.appleIntelligenceUnavailableReason {
+                return reason
+            }
+            if let reason = capabilities.foundationModelUnavailableReason {
+                return reason
+            }
+            return "Enable Apple Intelligence in Settings"
+        default:
+            return ""
         }
     }
     
     private var features: [String] {
         switch modelType {
         case .appleIntelligence:
+            if capabilities.supportsFoundationModels {
+                return [
+                    "Foundation Models (iOS 26+)",
+                    "On-device + Private Cloud Compute",
+                    "~3B parameters, 8K context",
+                    "Zero data retention",
+                    "Works offline for simple queries"
+                ]
+            } else {
+                return [
+                    "Apple Intelligence platform",
+                    "Automatic on-device/cloud routing",
+                    "Zero data retention (PCC)",
+                    "No API key needed",
+                    "Private and secure"
+                ]
+            }
+        case .onDeviceAnalysis:
             return [
-                "Automatic on-device/cloud routing",
-                "Zero data retention (PCC)",
-                "No API key needed",
-                "Works offline for simple queries"
-            ]
-        case .appleChatGPT:
-            return [
-                "GPT-4 level intelligence",
-                "No API key needed",
-                "Web-connected knowledge",
-                "User consent required"
+                "Extracts key sentences from documents",
+                "NaturalLanguage framework",
+                "No AI model needed",
+                "Works on all devices",
+                "100% private, no network"
             ]
         case .openAIDirect:
             return [
-                "Your own API key",
-                "Latest GPT models",
+                "Use your own OpenAI API key",
+                "Access latest GPT models (GPT-5, o1)",
                 "Pay-as-you-go pricing",
-                "Full control"
-            ]
-        case .mock:
-            return [
-                "For testing only",
-                "No real AI",
-                "Fast responses",
-                "No network required"
+                "Full control over usage",
+                "128K context window"
             ]
         }
+    }
+}
+
+// MARK: - Model Flow Diagnostics
+
+private struct ModelPipelineStage: Identifiable {
+    enum Role {
+        case primary
+        case fallback
+        case optional
+    }
+    
+    enum Status {
+        case active
+        case available
+        case unavailable(reason: String)
+        case requiresConfiguration(message: String)
+        case disabled
+    }
+    
+    let id = UUID()
+    let name: String
+    let role: Role
+    let detail: String
+    let status: Status
+    let icon: String
+}
+
+private struct ModelPipelineRow: View {
+    let stage: ModelPipelineStage
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: stage.icon)
+                    .font(.title3)
+                    .foregroundColor(color(for: stage.status))
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(stage.name)
+                            .font(.headline)
+                        roleBadge
+                    }
+                    Text(stage.detail)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    statusLabel
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+    
+    private var roleBadge: some View {
+        Text(stage.role.title)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(stage.role.tint.opacity(0.15))
+            .foregroundColor(stage.role.tint)
+            .clipShape(Capsule())
+    }
+    
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch stage.status {
+        case .active:
+            Label("Active", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(.green)
+        case .available:
+            Label("Ready", systemImage: "bolt.circle")
+                .font(.caption)
+                .foregroundColor(.blue)
+        case .unavailable(let reason):
+            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+        case .requiresConfiguration(let message):
+            Label(message, systemImage: "key.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+        case .disabled:
+            Label("Disabled in Settings", systemImage: "slash.circle")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    private func color(for status: ModelPipelineStage.Status) -> Color {
+        switch status {
+        case .active:
+            return .green
+        case .available:
+            return .blue
+        case .unavailable:
+            return .orange
+        case .requiresConfiguration:
+            return .orange
+        case .disabled:
+            return .secondary
+        }
+    }
+}
+
+private extension ModelPipelineStage.Role {
+    var title: String {
+        switch self {
+        case .primary:
+            return "Primary"
+        case .fallback:
+            return "Fallback"
+        case .optional:
+            return "Optional"
+        }
+    }
+    
+    var tint: Color {
+        switch self {
+        case .primary:
+            return .green
+        case .fallback:
+            return .blue
+        case .optional:
+            return .secondary
+        }
+    }
+}
+
+private extension LLMModelType {
+    var displayName: String {
+        switch self {
+        case .appleIntelligence:
+            return "Apple Intelligence"
+        case .onDeviceAnalysis:
+            return "On-Device Analysis"
+        case .openAIDirect:
+            return "OpenAI Direct"
+        }
+    }
+    
+    var iconName: String {
+        switch self {
+        case .appleIntelligence:
+            return "sparkles"
+        case .onDeviceAnalysis:
+            return "doc.text.magnifyingglass"
+        case .openAIDirect:
+            return "key.fill"
+        }
+    }
+}
+
+// MARK: - Info Row Component
+
+struct InfoRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(icon)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
 // MARK: - About View
 
 struct AboutView: View {
+    @State private var deviceCapabilities = DeviceCapabilities()
+    
     var body: some View {
         List {
             Section {
@@ -425,10 +996,48 @@ struct AboutView: View {
                 .padding(.vertical, 8)
             }
             
+            // Device & Capabilities
+            Section("Your Device") {
+                LabeledContent("Device Chip", value: deviceCapabilities.deviceChip.rawValue)
+                LabeledContent("iOS Version", value: deviceCapabilities.iOSVersion)
+                LabeledContent("Performance", value: deviceCapabilities.deviceChip.performanceRating)
+                LabeledContent("AI Tier", value: deviceCapabilities.deviceTier.description)
+            }
+            
+            Section("AI Capabilities") {
+                HStack {
+                    Text("Apple Intelligence")
+                    Spacer()
+                    Image(systemName: deviceCapabilities.supportsAppleIntelligence ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(deviceCapabilities.supportsAppleIntelligence ? .green : .secondary)
+                }
+                
+                HStack {
+                    Text("Foundation Models")
+                    Spacer()
+                    Image(systemName: deviceCapabilities.supportsFoundationModels ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(deviceCapabilities.supportsFoundationModels ? .green : .secondary)
+                }
+                
+                HStack {
+                    Text("Private Cloud Compute")
+                    Spacer()
+                    Image(systemName: deviceCapabilities.supportsPrivateCloudCompute ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(deviceCapabilities.supportsPrivateCloudCompute ? .green : .secondary)
+                }
+                
+                HStack {
+                    Text("Writing Tools")
+                    Spacer()
+                    Image(systemName: deviceCapabilities.supportsWritingTools ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(deviceCapabilities.supportsWritingTools ? .green : .secondary)
+                }
+            }
+            
             Section("Features") {
                 FeatureRow(icon: "doc.text.fill", title: "Document Processing", description: "Import PDFs, text files, and more")
                 FeatureRow(icon: "cpu", title: "On-Device Processing", description: "OCR, chunking, and embeddings run locally")
-                FeatureRow(icon: "brain", title: "Apple Intelligence", description: "Multiple AI pathways for different needs")
+                FeatureRow(icon: "brain", title: "Multiple AI Pathways", description: "Foundation Models, OpenAI, or extractive QA")
                 FeatureRow(icon: "lock.shield.fill", title: "Privacy First", description: "Your data stays on your device by default")
             }
             
@@ -437,10 +1046,19 @@ struct AboutView: View {
                 LabeledContent("Embeddings", value: "NLEmbedding (512-dim)")
                 LabeledContent("Vector Store", value: "In-memory cosine similarity")
                 LabeledContent("Minimum iOS", value: "18.0")
+                LabeledContent("Optimized for", value: "iOS 26.0+")
             }
         }
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            Task {
+                let caps = RAGService.checkDeviceCapabilities()
+                await MainActor.run {
+                    deviceCapabilities = caps
+                }
+            }
+        }
     }
 }
 

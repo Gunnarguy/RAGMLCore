@@ -17,8 +17,7 @@ struct CoreValidationView: View {
     @State private var overallStatus: TestStatus = .notStarted
     
     var body: some View {
-        NavigationView {
-            ScrollView {
+        ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // Overall Status Card
                     StatusCard(status: overallStatus, isRunning: isRunning, currentTest: currentTest)
@@ -63,7 +62,6 @@ struct CoreValidationView: View {
             }
             .navigationTitle("Core Validation")
             .navigationBarTitleDisplayMode(.inline)
-        }
     }
     
     // MARK: - Test Runner

@@ -9,35 +9,58 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var ragService = RAGService()
+    @State private var selectedTab: Tab = .chat
+    
+    enum Tab {
+        case chat, documents, tests, models, settings
+    }
     
     var body: some View {
-        TabView {
-            ChatView(ragService: ragService)
-                .tabItem {
-                    Label("Chat", systemImage: "bubble.left.and.bubble.right")
-                }
+        TabView(selection: $selectedTab) {
+            NavigationView {
+                ChatView(ragService: ragService)
+            }
+            .navigationViewStyle(.stack)
+            .tabItem {
+                Label("Chat", systemImage: "bubble.left.and.bubble.right")
+            }
+            .tag(Tab.chat)
             
-            DocumentLibraryView(ragService: ragService)
-                .tabItem {
-                    Label("Documents", systemImage: "doc.text.magnifyingglass")
-                }
+            NavigationView {
+                DocumentLibraryView(ragService: ragService)
+            }
+            .navigationViewStyle(.stack)
+            .tabItem {
+                Label("Documents", systemImage: "doc.text.magnifyingglass")
+            }
+            .tag(Tab.documents)
             
-            CoreValidationView(ragService: ragService)
-                .tabItem {
-                    Label("Tests", systemImage: "checkmark.circle")
-                }
+            NavigationView {
+                CoreValidationView(ragService: ragService)
+            }
+            .navigationViewStyle(.stack)
+            .tabItem {
+                Label("Tests", systemImage: "checkmark.circle")
+            }
+            .tag(Tab.tests)
             
-            ModelManagerView(ragService: ragService)
-                .tabItem {
-                    Label("Models", systemImage: "brain.head.profile")
-                }
+            NavigationView {
+                ModelManagerView(ragService: ragService)
+            }
+            .navigationViewStyle(.stack)
+            .tabItem {
+                Label("Models", systemImage: "brain.head.profile")
+            }
+            .tag(Tab.models)
             
             NavigationView {
                 SettingsView(ragService: ragService)
             }
+            .navigationViewStyle(.stack)
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
             }
+            .tag(Tab.settings)
         }
     }
 }

@@ -6,129 +6,176 @@
 //
 
 import SwiftUI
+#if canImport(WritingTools)
+import WritingTools
+#endif
 
 struct ChatView: View {
     @ObservedObject var ragService: RAGService
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
     @State private var isProcessing = false
+    @State private var rewriteSuggestions: [String] = []
+    @State private var showingRewriteSuggestions = false
     
     // Read settings from @AppStorage (synchronized with SettingsView)
     @AppStorage("retrievalTopK") private var retrievalTopK: Int = 3
     @AppStorage("llmTemperature") private var temperature: Double = 0.7
     @AppStorage("llmMaxTokens") private var maxTokens: Int = 500
+    @AppStorage("allowPrivateCloudCompute") private var allowPrivateCloudCompute: Bool = true
+    @AppStorage("executionContext") private var executionContextRaw: String = "automatic"
     
     @FocusState private var isInputFocused: Bool
     
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Chat messages
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            if messages.isEmpty {
-                                EmptyStateView()
-                            } else {
-                                ForEach(messages) { message in
-                                    MessageBubble(message: message)
-                                        .id(message.id)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                    .onChange(of: messages.count) {
-                        if let lastMessage = messages.last {
-                            withAnimation {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onTapGesture {
-                        // Dismiss keyboard when tapping chat area
-                        isInputFocused = false
-                    }
-                }
-                
-                Divider()
-                
-                // Input area
-                HStack(spacing: 12) {
-                    TextField(ragService.documents.isEmpty ? "Chat with AI (no documents loaded)..." : "Ask a question about your documents...", text: $inputText, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isInputFocused)
-                        .lineLimit(1...5)
-                        .disabled(isProcessing)
-                    
-                    // Show keyboard dismiss button when keyboard is visible
-                    if isInputFocused {
-                        Button(action: {
-                            isInputFocused = false
-                        }) {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                                .font(.system(size: 24))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(canSend ? .accentColor : .gray)
-                    }
-                    .disabled(!canSend)
-                }
-                .padding()
-                .background(Color(uiColor: .systemBackground))
-            }
-            .navigationTitle("RAG Chat")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    // Keyboard dismiss button in toolbar (appears when keyboard is up)
-                    if isInputFocused {
-                        Button(action: {
-                            isInputFocused = false
-                        }) {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                    }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Picker("Retrieved Chunks", selection: $retrievalTopK) {
-                            Text("3 chunks").tag(3)
-                            Text("5 chunks").tag(5)
-                            Text("10 chunks").tag(10)
-                        }
-                        
-                        Button(role: .destructive) {
-                            messages.removeAll()
-                        } label: {
-                            Label("Clear Chat", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-            }
-            .alert("Query Error", isPresented: .constant(ragService.lastError != nil)) {
-                Button("OK", role: .cancel) {
-                    ragService.lastError = nil
-                }
-            } message: {
-                if let error = ragService.lastError {
-                    Text(error)
-                }
-            }
+    private var executionContext: ExecutionContext {
+        switch executionContextRaw {
+        case "automatic": return .automatic
+        case "onDeviceOnly": return .onDeviceOnly
+        case "preferCloud": return .preferCloud
+        case "cloudOnly": return .cloudOnly
+        default: return .automatic
         }
     }
     
+    var body: some View {
+        VStack(spacing: 0) {
+            // Chat messages
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        if messages.isEmpty {
+                            EmptyStateView()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ForEach(messages) { message in
+                                MessageBubble(message: message)
+                                    .id(message.id)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: messages.count) {
+                    if let lastMessage = messages.last {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                }
+                .onTapGesture {
+                    // Dismiss keyboard when tapping chat area
+                    isInputFocused = false
+                }
+            }
+            
+            Divider()
+            
+            // Input area
+            HStack(spacing: 12) {
+                messageTextField
+                
+                // Show keyboard dismiss button when keyboard is visible
+                if isInputFocused {
+                    Button(action: {
+                        isInputFocused = false
+                    }) {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                            .font(.system(size: 24))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(canSend ? .accentColor : .gray)
+                }
+                .disabled(!canSend)
+            }
+            .padding()
+            .background(Color(uiColor: .systemBackground))
+        }
+        .navigationTitle("RAG Chat")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                // Keyboard dismiss button in toolbar (appears when keyboard is up)
+                if isInputFocused {
+                    Button(action: {
+                        isInputFocused = false
+                    }) {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                }
+            }
+            
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Picker("Retrieved Chunks", selection: $retrievalTopK) {
+                        Text("3 chunks").tag(3)
+                        Text("5 chunks").tag(5)
+                        Text("10 chunks").tag(10)
+                    }
+                    
+                    Button(role: .destructive) {
+                        messages.removeAll()
+                    } label: {
+                        Label("Clear Chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .alert("Query Error", isPresented: .constant(ragService.lastError != nil)) {
+            Button("OK", role: .cancel) {
+                ragService.lastError = nil
+            }
+        } message: {
+            if let error = ragService.lastError {
+                Text(error)
+            }
+        }
+        .confirmationDialog("Choose a rewrite", isPresented: $showingRewriteSuggestions, titleVisibility: .visible) {
+            ForEach(rewriteSuggestions, id: \.self) { suggestion in
+                Button(suggestion) {
+                    inputText = suggestion
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+
+    }
+
     private var canSend: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !isProcessing &&
         ragService.isLLMAvailable
+    }
+    
+    @ViewBuilder
+    private var messageTextField: some View {
+        let baseTextField = TextField(
+            ragService.documents.isEmpty ? "Chat with AI (no documents loaded)..." : "Ask a question about your documents...",
+            text: $inputText,
+            axis: .vertical
+        )
+        .textFieldStyle(.roundedBorder)
+        .focused($isInputFocused)
+        .lineLimit(1...5)
+        .disabled(isProcessing)
+        
+        #if canImport(WritingTools)
+        if #available(iOS 18.1, *) {
+            baseTextField
+                .writingToolsEnabled(true)
+                .onWritingToolsAction(handleWritingToolsAction(_:))
+        } else {
+            baseTextField
+        }
+        #else
+        baseTextField
+        #endif
     }
     
     private func sendMessage() {
@@ -147,7 +194,12 @@ struct ChatView: View {
                 // Use settings from SettingsView (synchronized via @AppStorage)
                 let config = InferenceConfig(
                     maxTokens: maxTokens,
-                    temperature: Float(temperature)
+                    temperature: Float(temperature),
+                    topP: 0.9,
+                    topK: 40,
+                    useKVCache: true,
+                    executionContext: executionContext,
+                    allowPrivateCloudCompute: allowPrivateCloudCompute
                 )
                 
                 let response = try await ragService.query(query, topK: retrievalTopK, config: config)
@@ -173,6 +225,25 @@ struct ChatView: View {
         }
     }
 }
+
+#if canImport(WritingTools)
+@available(iOS 18.1, *)
+private extension ChatView {
+    func handleWritingToolsAction(_ action: WritingToolsAction) {
+        switch action {
+        case .proofread(let correctedText):
+            inputText = correctedText
+        case .rewrite(let alternatives):
+            rewriteSuggestions = alternatives
+            showingRewriteSuggestions = true
+        case .summarize(let summary):
+            inputText = summary
+        @unknown default:
+            break
+        }
+    }
+}
+#endif
 
 struct ChatMessage: Identifiable {
     let id = UUID()

@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import NaturalLanguage
 
 /// Main orchestrator for the RAG (Retrieval-Augmented Generation) pipeline
 /// Coordinates document processing, embedding, retrieval, and generation
@@ -77,13 +78,8 @@ class RAGService: ObservableObject {
                 let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
                 self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
                 print("✓ Using OpenAI Direct: \(selectedModel)")
-            } else if #available(iOS 18.1, *),
-                      AppleChatGPTExtensionService().isAvailable {
-                // Priority 3: Apple's ChatGPT Extension (iOS 18.1+)
-                self._llmService = AppleChatGPTExtensionService()
-                print("✓ Using Apple ChatGPT Extension")
             } else {
-                // Priority 4: On-Device Analysis (extractive QA, no AI model needed)
+                // Priority 3: On-Device Analysis (extractive QA, no AI model needed)
                 self._llmService = OnDeviceAnalysisService()
                 print("✓ Using On-Device Analysis (extractive QA)")
                 print("   💡 For AI generation, add OpenAI API key in Settings or upgrade to iOS 26")
@@ -95,13 +91,8 @@ class RAGService: ObservableObject {
                 let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
                 self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
                 print("✓ Using OpenAI Direct: \(selectedModel)")
-            } else if #available(iOS 18.1, *),
-                      AppleChatGPTExtensionService().isAvailable {
-                // Priority 3: Apple's ChatGPT Extension (iOS 18.1+)
-                self._llmService = AppleChatGPTExtensionService()
-                print("✓ Using Apple ChatGPT Extension")
             } else {
-                // Priority 4: On-Device Analysis (extractive QA, no AI model needed)
+                // Priority 3: On-Device Analysis (extractive QA, no AI model needed)
                 self._llmService = OnDeviceAnalysisService()
                 print("✓ Using On-Device Analysis (extractive QA)")
                 print("   💡 For AI generation, add OpenAI API key in Settings")
@@ -603,52 +594,318 @@ class RAGService: ObservableObject {
 
 extension RAGService {
     
-    /// Check device capabilities for on-device AI
+    /// Comprehensive device capability detection for Apple Intelligence ecosystem
     static func checkDeviceCapabilities() -> DeviceCapabilities {
         var capabilities = DeviceCapabilities()
         
-        // Check for Apple Intelligence support (A17 Pro+ or M-series)
+        // Get iOS version
+        let systemVersion = ProcessInfo.processInfo.operatingSystemVersion
+        capabilities.iOSVersion = "\(systemVersion.majorVersion).\(systemVersion.minorVersion).\(systemVersion.patchVersion)"
+        capabilities.iOSMajor = systemVersion.majorVersion
+        capabilities.iOSMinor = systemVersion.minorVersion
+        let hasAppleIntelligenceOS = (systemVersion.majorVersion > 18) || (systemVersion.majorVersion == 18 && systemVersion.minorVersion >= 1)
+        
+        // Detect device/chip tier based on available features
+        // This is an approximation since we can't directly query chip model
+        capabilities.deviceChip = detectDeviceChip()
+        
+        // Check Apple Intelligence availability (requires A17 Pro+/M-series + iOS 18.1+)
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *) {
-            // Note: SystemLanguageModel API not yet available in current SDK
-            capabilities.supportsAppleIntelligence = false // Will be enabled when iOS 26 SDK is released
+            // iOS 26+ with Foundation Models
+            #if targetEnvironment(simulator)
+            capabilities.supportsFoundationModels = false
+            capabilities.foundationModelUnavailableReason = "Foundation Models not available in Simulator"
+            capabilities.supportsAppleIntelligence = false
+            capabilities.appleIntelligenceUnavailableReason = "Not available in Simulator"
+            #else
+            // Check hardware capability only - don't actually instantiate SystemLanguageModel
+            // (accessing SystemLanguageModel.default can crash if Apple Intelligence not enabled)
+            if capabilities.deviceChip.supportsAppleIntelligence {
+                // Device has capable hardware (A17 Pro+/M-series) and iOS 26+
+                // Assume Foundation Models are potentially available
+                // Actual availability will be checked when AppleFoundationLLMService is used
+                capabilities.supportsFoundationModels = true
+                capabilities.foundationModelUnavailableReason = nil
+                capabilities.supportsAppleIntelligence = true
+                capabilities.appleIntelligenceUnavailableReason = nil
+                
+                print("📱 Hardware supports Foundation Models (A18 Pro/A17 Pro+/M-series detected)")
+                print("   ℹ️  Actual model availability will be verified when used")
+                print("   💡 If not working, check Settings > Apple Intelligence & Siri")
+            } else {
+                // Device doesn't have capable hardware
+                capabilities.supportsFoundationModels = false
+                capabilities.foundationModelUnavailableReason = "Requires A17 Pro+ or M-series chip"
+                capabilities.supportsAppleIntelligence = false
+                capabilities.appleIntelligenceUnavailableReason = "Requires A17 Pro+ or M-series chip"
+            }
+            #endif
+            
+            // iOS 26 includes all iOS 18.1+ features
+            capabilities.supportsPrivateCloudCompute = true
+            capabilities.supportsWritingTools = true
+            capabilities.supportsImagePlayground = capabilities.deviceChip.supportsAppleIntelligence
+        } else if hasAppleIntelligenceOS {
+            // iOS 18.1+ has Apple Intelligence (PCC, Writing Tools, ChatGPT)
+            // but no Foundation Models yet
+            capabilities.supportsAppleIntelligence = capabilities.deviceChip.supportsAppleIntelligence
+            capabilities.supportsPrivateCloudCompute = true
+            capabilities.supportsWritingTools = true
+            capabilities.supportsImagePlayground = capabilities.deviceChip.supportsAppleIntelligence
+            capabilities.foundationModelUnavailableReason = "Requires iOS 26"
+            if !capabilities.supportsAppleIntelligence {
+                capabilities.appleIntelligenceUnavailableReason = "Requires A17 Pro+ or M-series"
+            }
+        } else {
+            capabilities.foundationModelUnavailableReason = "Requires iOS 26"
+            capabilities.appleIntelligenceUnavailableReason = "Requires iOS 18.1+"
+        }
+        #else
+        if hasAppleIntelligenceOS {
+            capabilities.supportsAppleIntelligence = capabilities.deviceChip.supportsAppleIntelligence
+            capabilities.supportsPrivateCloudCompute = true
+            capabilities.supportsWritingTools = true
+            capabilities.supportsImagePlayground = capabilities.deviceChip.supportsAppleIntelligence
+            capabilities.foundationModelUnavailableReason = "Build with iOS 26 SDK to enable"
+            if !capabilities.supportsAppleIntelligence {
+                capabilities.appleIntelligenceUnavailableReason = "Requires A17 Pro+ or M-series"
+            }
+        } else {
+            capabilities.foundationModelUnavailableReason = "Build with iOS 26 SDK to enable"
+            capabilities.appleIntelligenceUnavailableReason = "Requires iOS 18.1+"
         }
         #endif
         
-        // Check for embedding support
-        let embeddingService = EmbeddingService()
-        capabilities.supportsEmbeddings = embeddingService.isAvailable
+        // Check NaturalLanguage embedding support
+        // NLEmbedding is available on iOS 13+, so we can assume it's available
+        // Rather than risk crashing by initializing the model here
+        capabilities.supportsEmbeddings = true
         
-        // Check for Core ML support (available on all devices, but performance varies)
+        // Core ML is always available
         capabilities.supportsCoreML = true
         
-        // Estimate device tier based on capabilities
-        // Note: Once iOS 26 SDK is released and supportsAppleIntelligence can be properly detected,
-        // we'll be able to distinguish .high tier (A17 Pro+/M-series) from .medium tier
-        if capabilities.supportsEmbeddings {
-            capabilities.deviceTier = .medium // A13+ with embedding support
-        } else {
-            capabilities.deviceTier = .low
-        }
+        // App Intents (Siri) available on all iOS versions
+        capabilities.supportsAppIntents = true
+        
+        // Vision framework available on all devices
+        capabilities.supportsVision = true
+        
+        // VisionKit (document scanning) available on all devices
+        capabilities.supportsVisionKit = true
+        
+        // Determine device tier
+        capabilities.deviceTier = determineDeviceTier(
+            chip: capabilities.deviceChip,
+            hasAppleIntelligence: capabilities.supportsAppleIntelligence,
+            hasEmbeddings: capabilities.supportsEmbeddings
+        )
+        
+        // Note: canRunRAG is a computed property based on supportsEmbeddings
         
         return capabilities
     }
-}
-
-struct DeviceCapabilities {
-    var supportsAppleIntelligence = false
-    var supportsEmbeddings = false
-    var supportsCoreML = false
-    var deviceTier: DeviceTier = .low
     
-    var canRunRAG: Bool {
-        return supportsEmbeddings // Minimum requirement
+    /// Detect device chip based on available features
+    private static func detectDeviceChip() -> DeviceChip {
+        // Check for Neural Engine and performance characteristics
+        // This is an approximation - we can't directly query the chip model in iOS
+        
+        // Simulator gets conservative capabilities to avoid crashes
+        #if targetEnvironment(simulator)
+        return .a14Bionic // Don't claim Apple Intelligence support in simulator
+        #else
+        
+        var systemInfo = utsname()
+        guard uname(&systemInfo) == 0 else {
+            // If uname fails, return conservative fallback
+            return .a14Bionic
+        }
+        
+        let modelCode = withUnsafeBytes(of: &systemInfo.machine) { bytes -> String? in
+            guard let cString = bytes.baseAddress?.assumingMemoryBound(to: CChar.self) else {
+                return nil
+            }
+            return String(cString: cString)
+        }
+        
+        let identifier = modelCode ?? "unknown"
+        
+        // iPhone identifiers
+        if identifier.contains("iPhone") {
+            // Extract iPhone model number
+            if identifier.contains("iPhone16") || identifier.contains("iPhone17") {
+                // iPhone 16 Pro/Max (A18 Pro), iPhone 15 Pro/Max (A17 Pro), or newer
+                return .a17ProOrNewer
+            } else if identifier.contains("iPhone15") {
+                // iPhone 14 Pro (A16)
+                return .a16Bionic
+            } else if identifier.contains("iPhone14") {
+                // iPhone 13 Pro (A15)
+                return .a15Bionic
+            } else if identifier.contains("iPhone13") {
+                // iPhone 12 Pro (A14)
+                return .a14Bionic
+            } else if identifier.contains("iPhone12") {
+                // iPhone 11 Pro (A13)
+                return .a13Bionic
+            } else {
+                return .older
+            }
+        }
+        
+        // iPad identifiers
+        if identifier.contains("iPad") {
+            if identifier.contains("iPad14") || identifier.contains("iPad15") || identifier.contains("iPad16") {
+                // iPad with M-series or A17+
+                return .mSeries
+            } else if identifier.contains("iPad13") {
+                // iPad with A15/A16
+                return .a16Bionic
+            } else {
+                return .a14Bionic
+            }
+        }
+        
+        // Mac identifiers (Mac Catalyst)
+        if identifier.contains("Mac") || identifier.contains("x86") || identifier.contains("arm64") {
+            return .mSeries
+        }
+        
+        // Conservative fallback for devices we don't recognize
+        return .a14Bionic
+        #endif
     }
     
+    /// Determine device performance tier
+    private static func determineDeviceTier(chip: DeviceChip, hasAppleIntelligence: Bool, hasEmbeddings: Bool) -> DeviceCapabilities.DeviceTier {
+        if hasAppleIntelligence && chip.supportsAppleIntelligence {
+            return .high // A17 Pro+ or M-series with full Apple Intelligence
+        } else if hasEmbeddings {
+            return .medium // A13+ with embedding support
+        } else {
+            return .low // Older devices
+        }
+    }
+}
+
+// MARK: - Device Chip Detection
+
+enum DeviceChip: String {
+    case mSeries = "Apple Silicon (M1+)"
+    case a17ProOrNewer = "A17 Pro / A18"
+    case a16Bionic = "A16 Bionic"
+    case a15Bionic = "A15 Bionic"
+    case a14Bionic = "A14 Bionic"
+    case a13Bionic = "A13 Bionic"
+    case older = "A12 or Older"
+    
+    var supportsAppleIntelligence: Bool {
+        switch self {
+        case .mSeries, .a17ProOrNewer:
+            return true
+        default:
+            return false
+        }
+    }
+    
+    var supportsNeuralEngine: Bool {
+        // A11+ has Neural Engine
+        return self != .older
+    }
+    
+    var performanceRating: String {
+        switch self {
+        case .mSeries:
+            return "Exceptional"
+        case .a17ProOrNewer:
+            return "Excellent"
+        case .a16Bionic:
+            return "Very Good"
+        case .a15Bionic, .a14Bionic:
+            return "Good"
+        case .a13Bionic:
+            return "Moderate"
+        case .older:
+            return "Limited"
+        }
+    }
+}
+
+// MARK: - Device Capabilities Structure
+
+struct DeviceCapabilities {
+    // Device Information
+    var deviceChip: DeviceChip = .a14Bionic
+    var iOSVersion: String = "Unknown"
+    var iOSMajor: Int = 0
+    var iOSMinor: Int = 0
+
+    // Apple Intelligence Features (iOS 18.1+)
+    var supportsAppleIntelligence = false
+    var supportsPrivateCloudCompute = false
+    var supportsWritingTools = false
+    var supportsImagePlayground = false
+    var appleIntelligenceUnavailableReason: String? = nil
+
+    // Foundation Models (iOS 26.0+)
+    var supportsFoundationModels = false
+    var foundationModelUnavailableReason: String? = nil
+
+    // Core AI Frameworks
+    var supportsEmbeddings = false
+    var supportsCoreML = false
+    var supportsAppIntents = false
+    var supportsVision = false
+    var supportsVisionKit = false
+
+    // Computed Properties
+    var deviceTier: DeviceTier = .low
+
+    var canRunRAG: Bool { supportsEmbeddings }
+
+    var canRunAdvancedAI: Bool { supportsAppleIntelligence || supportsFoundationModels }
+
+    var appleIntelligenceStatus: String {
+        if supportsFoundationModels {
+            return "Foundation Models Available"
+        } else if supportsAppleIntelligence {
+            return "Apple Intelligence Available"
+        } else if let reason = appleIntelligenceUnavailableReason {
+            return reason
+        } else if iOSMajor >= 18 {
+            return "Requires A17 Pro+ or M-series"
+        } else {
+            return "Requires iOS 18.1+"
+        }
+    }
+
     enum DeviceTier {
-        case low    // Older devices, no AI features
-        case medium // A13+, can run embeddings but not Apple Intelligence
+        case low    // Pre-A13, minimal AI support
+        case medium // A13-A16, embeddings + Core ML
         case high   // A17 Pro+ or M-series, full Apple Intelligence
+
+        var description: String {
+            switch self {
+            case .high:
+                return "Premium (Full AI Capabilities)"
+            case .medium:
+                return "Standard (Good AI Support)"
+            case .low:
+                return "Basic (Limited AI Support)"
+            }
+        }
+
+        var color: String {
+            switch self {
+            case .high:
+                return "green"
+            case .medium:
+                return "blue"
+            case .low:
+                return "orange"
+            }
+        }
     }
 }
 

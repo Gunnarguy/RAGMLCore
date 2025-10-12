@@ -15,56 +15,191 @@ struct ModelManagerView: View {
     @State private var deviceCapabilities = DeviceCapabilities()
     
     var body: some View {
-        NavigationView {
-            List {
-                Section(header: Text("Device Capabilities")) {
+        List {
+                // MARK: - Device Information
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "cpu")
+                                .font(.title2)
+                                .foregroundColor(.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(deviceCapabilities.deviceChip.rawValue)
+                                    .font(.headline)
+                                Text(deviceCapabilities.deviceChip.performanceRating)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text(deviceCapabilities.deviceTier.description)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(deviceTierColor.opacity(0.2))
+                                .foregroundColor(deviceTierColor)
+                                .cornerRadius(8)
+                        }
+                        
+                        Divider()
+                        
+                        HStack {
+                            Image(systemName: "iphone.gen3")
+                                .foregroundColor(.secondary)
+                            Text("iOS \(deviceCapabilities.iOSVersion)")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(deviceCapabilities.appleIntelligenceStatus)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Device Information")
+                }
+                
+                // MARK: - Apple Intelligence Features
+                Section {
+                    // Foundation Models (iOS 26+)
                     CapabilityRow(
-                        icon: "cpu",
-                        label: "Apple Intelligence",
-                        isSupported: deviceCapabilities.supportsAppleIntelligence
-                    )
-                    CapabilityRow(
-                        icon: "chart.bar.doc.horizontal",
-                        label: "On-Device Embeddings",
-                        isSupported: deviceCapabilities.supportsEmbeddings
-                    )
-                    CapabilityRow(
-                        icon: "brain",
-                        label: "Core ML Support",
-                        isSupported: deviceCapabilities.supportsCoreML
+                        icon: "brain.head.profile",
+                        label: "Foundation Models",
+                        sublabel: "On-device LLM (iOS 26+)",
+                        isSupported: deviceCapabilities.supportsFoundationModels,
+                        badge: deviceCapabilities.supportsFoundationModels ? "iOS 26" : nil
                     )
                     
-                    HStack {
-                        Image(systemName: "speedometer")
-                            .foregroundColor(.secondary)
-                        Text("Device Tier")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(tierDescription(deviceCapabilities.deviceTier))
-                            .fontWeight(.medium)
-                            .foregroundColor(tierColor(deviceCapabilities.deviceTier))
+                    // Apple Intelligence Platform (iOS 18.1+)
+                    CapabilityRow(
+                        icon: "sparkles",
+                        label: "Apple Intelligence",
+                        sublabel: "A17 Pro+ or M-series required",
+                        isSupported: deviceCapabilities.supportsAppleIntelligence,
+                        badge: deviceCapabilities.supportsAppleIntelligence ? "iOS 18.1+" : nil
+                    )
+                    
+                    // Private Cloud Compute (iOS 18.1+)
+                    CapabilityRow(
+                        icon: "cloud.fill",
+                        label: "Private Cloud Compute",
+                        sublabel: "Secure cloud inference",
+                        isSupported: deviceCapabilities.supportsPrivateCloudCompute,
+                        badge: deviceCapabilities.supportsPrivateCloudCompute ? "Available" : nil
+                    )
+                    
+                    // Writing Tools (iOS 18.1+)
+                    CapabilityRow(
+                        icon: "pencil.and.list.clipboard",
+                        label: "Writing Tools",
+                        sublabel: "Proofreading & rewriting",
+                        isSupported: deviceCapabilities.supportsWritingTools,
+                        badge: deviceCapabilities.supportsWritingTools ? "iOS 18.1+" : nil
+                    )
+                    
+                    // Image Playground (iOS 18.1+, requires A17 Pro+)
+                    CapabilityRow(
+                        icon: "photo.on.rectangle.angled",
+                        label: "Image Playground",
+                        sublabel: "On-device image generation",
+                        isSupported: deviceCapabilities.supportsImagePlayground,
+                        badge: deviceCapabilities.supportsImagePlayground ? "Available" : nil
+                    )
+                } header: {
+                    Text("Apple Intelligence")
+                } footer: {
+                    if !deviceCapabilities.supportsAppleIntelligence {
+                        Text("Apple Intelligence requires iOS 18.1+ and A17 Pro, A18, or M-series chip. Foundation Models require iOS 26.0+.")
                     }
                 }
                 
-                Section(header: Text("Active Model")) {
+                // MARK: - Core AI Frameworks
+                Section {
+                    CapabilityRow(
+                        icon: "chart.bar.doc.horizontal",
+                        label: "NaturalLanguage Embeddings",
+                        sublabel: "512-dim semantic vectors",
+                        isSupported: deviceCapabilities.supportsEmbeddings,
+                        badge: "On-Device"
+                    )
+                    
+                    CapabilityRow(
+                        icon: "gearshape.2.fill",
+                        label: "Core ML",
+                        sublabel: "Neural Engine optimization",
+                        isSupported: deviceCapabilities.supportsCoreML,
+                        badge: "Available"
+                    )
+                    
+                    CapabilityRow(
+                        icon: "eye.fill",
+                        label: "Vision Framework",
+                        sublabel: "Image & document analysis",
+                        isSupported: deviceCapabilities.supportsVision,
+                        badge: "Available"
+                    )
+                    
+                    CapabilityRow(
+                        icon: "doc.viewfinder.fill",
+                        label: "VisionKit",
+                        sublabel: "Document scanning",
+                        isSupported: deviceCapabilities.supportsVisionKit,
+                        badge: "Available"
+                    )
+                    
+                    CapabilityRow(
+                        icon: "waveform.path.ecg",
+                        label: "App Intents (Siri)",
+                        sublabel: "Voice-activated queries",
+                        isSupported: deviceCapabilities.supportsAppIntents,
+                        badge: "Available"
+                    )
+                } header: {
+                    Text("AI Frameworks")
+                }
+                
+                // MARK: - Active Model
+                Section {
                     HStack {
                         Image(systemName: "brain.head.profile")
                             .foregroundColor(.accentColor)
+                            .font(.title3)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(ragService.currentModelName)
                                 .font(.headline)
-                            Text(ragService.isLLMAvailable ? "Available" : "Unavailable")
+                            Text(ragService.isLLMAvailable ? "Ready for queries" : "Unavailable")
                                 .font(.caption)
-                                .foregroundColor(ragService.isLLMAvailable ? .green : .red)
+                                .foregroundColor(ragService.isLLMAvailable ? .green : .orange)
+                            
+                            // Show specific unavailability reason for Foundation Models
+                            if !ragService.isLLMAvailable {
+                                #if canImport(FoundationModels)
+                                if #available(iOS 26.0, *),
+                                   let service = ragService.llmService as? AppleFoundationLLMService,
+                                   let reason = service.unavailabilityReason {
+                                    Text(reason)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                #endif
+                            }
                         }
                         Spacer()
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                        Image(systemName: ragService.isLLMAvailable ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .foregroundColor(ragService.isLLMAvailable ? .green : .orange)
+                            .font(.title3)
                     }
+                    .padding(.vertical, 6)
+                } header: {
+                    Text("Active Model")
+                } footer: {
+                    Text("Change the active model in Settings → AI Model")
                 }
                 
-                Section(header: Text("Available Models")) {
-                    if deviceCapabilities.supportsAppleIntelligence {
+                // MARK: - Available Models
+                Section {
+                    if deviceCapabilities.supportsFoundationModels {
                         ModelRow(model: LLMModel(
                             name: "Apple Foundation Model",
                             modelType: .appleFoundation,
@@ -74,36 +209,78 @@ struct ModelManagerView: View {
                         ))
                     }
                     
-                    if availableModels.isEmpty {
-                        Text("No custom models installed")
-                            .foregroundColor(.secondary)
-                            .italic()
-                    } else {
+                    // OpenAI Direct (always available if user has API key)
+                    ModelRow(model: LLMModel(
+                        name: "OpenAI Direct",
+                        modelType: .coreMLPackage, // Using as generic type
+                        parameterCount: "Varies",
+                        contextLength: 128000,
+                        isAvailable: true
+                    ))
+                    
+                    // On-Device Analysis (always available)
+                    ModelRow(model: LLMModel(
+                        name: "On-Device Analysis",
+                        modelType: .coreMLPackage,
+                        parameterCount: "N/A",
+                        contextLength: 8192,
+                        isAvailable: true
+                    ))
+                    
+                    if !availableModels.isEmpty {
                         ForEach(availableModels) { model in
                             ModelRow(model: model)
                         }
                     }
+                } header: {
+                    Text("Available Models")
+                } footer: {
+                    Text("Select your preferred model in Settings. Custom Core ML and GGUF models can be added for advanced users.")
                 }
                 
-                Section(header: Text("Add Custom Models")) {
+                // MARK: - Add Custom Models
+                Section {
                     Button(action: {
                         showingModelInfo = true
                     }) {
                         HStack {
                             Image(systemName: "info.circle")
                             Text("How to Add Custom Models")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
+                } header: {
+                    Text("Advanced")
                 }
             }
-            .navigationTitle("Models")
+            .listStyle(.insetGrouped)
+            .navigationTitle("Models & Capabilities")
+            .navigationBarTitleDisplayMode(.large)
             .onAppear {
-                deviceCapabilities = RAGService.checkDeviceCapabilities()
-                loadAvailableModels()
+                Task {
+                    let caps = RAGService.checkDeviceCapabilities()
+                    await MainActor.run {
+                        deviceCapabilities = caps
+                        loadAvailableModels()
+                    }
+                }
             }
             .sheet(isPresented: $showingModelInfo) {
                 CustomModelInstructionsView()
             }
+    }
+    
+    private var deviceTierColor: Color {
+        switch deviceCapabilities.deviceTier {
+        case .high:
+            return .green
+        case .medium:
+            return .blue
+        case .low:
+            return .orange
         }
     }
     
@@ -111,45 +288,53 @@ struct ModelManagerView: View {
         // Future enhancement: Scan app directory for .mlpackage and .gguf files
         availableModels = []
     }
-    
-    private func tierDescription(_ tier: DeviceCapabilities.DeviceTier) -> String {
-        switch tier {
-        case .high:
-            return "High Performance"
-        case .medium:
-            return "Medium Performance"
-        case .low:
-            return "Limited Support"
-        }
-    }
-    
-    private func tierColor(_ tier: DeviceCapabilities.DeviceTier) -> Color {
-        switch tier {
-        case .high:
-            return .green
-        case .medium:
-            return .orange
-        case .low:
-            return .red
-        }
-    }
 }
+
+// MARK: - Capability Row Component
 
 struct CapabilityRow: View {
     let icon: String
     let label: String
+    var sublabel: String? = nil
     let isSupported: Bool
+    var badge: String? = nil
     
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
             Image(systemName: icon)
-                .foregroundColor(.secondary)
-            Text(label)
-                .foregroundColor(.secondary)
+                .font(.title3)
+                .foregroundColor(isSupported ? .accentColor : .secondary)
+                .frame(width: 28)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.body)
+                    .foregroundColor(isSupported ? .primary : .secondary)
+                if let sublabel = sublabel {
+                    Text(sublabel)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
             Spacer()
+            
+            if let badge = badge, isSupported {
+                Text(badge)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.15))
+                    .foregroundColor(.accentColor)
+                    .cornerRadius(6)
+            }
+            
             Image(systemName: isSupported ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .foregroundColor(isSupported ? .green : .red)
+                .font(.title3)
         }
+        .padding(.vertical, 4)
     }
 }
 
@@ -157,43 +342,77 @@ struct ModelRow: View {
     let model: LLMModel
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(model.name)
-                    .font(.headline)
-                Spacer()
-                if model.isAvailable {
-                    Text("Available")
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.green.opacity(0.2))
-                        .foregroundColor(.green)
-                        .cornerRadius(8)
-                }
-            }
+        HStack(spacing: 12) {
+            // Icon based on model type
+            Image(systemName: modelIcon)
+                .font(.title2)
+                .foregroundColor(.accentColor)
+                .frame(width: 32)
             
-            HStack(spacing: 16) {
-                Label(model.parameterCount, systemImage: "number")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(model.name)
+                        .font(.headline)
+                    Spacer()
+                    if model.isAvailable {
+                        Text("Available")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.green.opacity(0.2))
+                            .foregroundColor(.green)
+                            .cornerRadius(6)
+                    }
+                }
                 
-                Label("\(model.contextLength) tokens", systemImage: "text.alignleft")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                if let quantization = model.quantization {
-                    Label(quantization, systemImage: "dial.medium")
+                HStack(spacing: 12) {
+                    Label(model.parameterCount, systemImage: "number.circle")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    
+                    Label("\(formatContextLength(model.contextLength))", systemImage: "doc.text")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let quantization = model.quantization {
+                        Label(quantization, systemImage: "dial.medium.fill")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                HStack {
+                    Text(model.modelType.rawValue)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(uiColor: .systemGray5))
+                        .foregroundColor(.secondary)
+                        .cornerRadius(4)
                 }
             }
-            
-            Text(model.modelType.rawValue)
-                .font(.caption2)
-                .foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
+    }
+    
+    private var modelIcon: String {
+        switch model.modelType {
+        case .appleFoundation:
+            return "brain.head.profile"
+        case .coreMLPackage:
+            return "cpu"
+        case .gguf:
+            return "doc.badge.gearshape"
+        }
+    }
+    
+    private func formatContextLength(_ length: Int) -> String {
+        if length >= 1000 {
+            return "\(length / 1000)K ctx"
+        } else {
+            return "\(length) ctx"
+        }
     }
 }
 
