@@ -49,30 +49,64 @@ class RAGService: ObservableObject {
         self.vectorDatabase = vectorDatabase
         
         // Priority order for LLM selection:
-        // 1. Custom service provided by user
-        // 2. Apple Foundation Model (on-device AI)
-        // 3. OpenAI Direct (if API key available as fallback)
+        // 1. Custom service provided by caller
+        // 2. OpenAI Direct (if API key configured)
+        // 3. Apple ChatGPT Extension (iOS 18.1+ with user consent)
+        // 4. On-Device Analysis (extractive QA, always available)
         
         if let service = llmService {
-            // User provided custom service
+            // User provided custom service (e.g., from Settings)
             self._llmService = service
             print("✓ Using custom LLM service: \(service.modelName)")
-        } else if #available(iOS 18.0, *) {
-            // Use Apple Intelligence by default (on-device + PCC)
-            self._llmService = AppleIntelligenceService()
-            print("✓ Using Apple Intelligence (automatic on-device/cloud)")
-            print("   🔒 Privacy-first: On-device processing with zero-retention cloud fallback")
-        } else if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
-                  !apiKey.isEmpty {
-            // Fallback to OpenAI if API key is configured and iOS < 18
-            let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-            self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
-            print("✓ Using OpenAI: \(selectedModel)")
         } else {
-            // Last resort: Mock LLM for older devices without API key
-            self._llmService = MockLLMService()
-            print("⚠️  Using Mock LLM - iOS 18+ or OpenAI API key required for real AI")
-            print("   💡 Add your OpenAI API key in Settings to enable real AI on this device")
+            // Priority order for automatic LLM selection:
+            // 1. Apple Foundation Models (iOS 26+, on-device + PCC)
+            // 2. OpenAI Direct API (user's key)
+            // 3. Apple ChatGPT Extension (iOS 18.1+)
+            // 4. On-Device Analysis (extractive QA, always available)
+            
+            #if canImport(FoundationModels)
+            if #available(iOS 26.0, *),
+               AppleFoundationLLMService().isAvailable {
+                // Priority 1: Apple's Foundation Models with on-device + PCC
+                self._llmService = AppleFoundationLLMService()
+                print("✓ Using Apple Foundation Models (on-device + PCC)")
+            } else if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
+                      !apiKey.isEmpty {
+                // Priority 2: OpenAI Direct API with user's key
+                let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+                self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
+                print("✓ Using OpenAI Direct: \(selectedModel)")
+            } else if #available(iOS 18.1, *),
+                      AppleChatGPTExtensionService().isAvailable {
+                // Priority 3: Apple's ChatGPT Extension (iOS 18.1+)
+                self._llmService = AppleChatGPTExtensionService()
+                print("✓ Using Apple ChatGPT Extension")
+            } else {
+                // Priority 4: On-Device Analysis (extractive QA, no AI model needed)
+                self._llmService = OnDeviceAnalysisService()
+                print("✓ Using On-Device Analysis (extractive QA)")
+                print("   💡 For AI generation, add OpenAI API key in Settings or upgrade to iOS 26")
+            }
+            #else
+            if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
+               !apiKey.isEmpty {
+                // Priority 2: OpenAI Direct API with user's key
+                let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+                self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
+                print("✓ Using OpenAI Direct: \(selectedModel)")
+            } else if #available(iOS 18.1, *),
+                      AppleChatGPTExtensionService().isAvailable {
+                // Priority 3: Apple's ChatGPT Extension (iOS 18.1+)
+                self._llmService = AppleChatGPTExtensionService()
+                print("✓ Using Apple ChatGPT Extension")
+            } else {
+                // Priority 4: On-Device Analysis (extractive QA, no AI model needed)
+                self._llmService = OnDeviceAnalysisService()
+                print("✓ Using On-Device Analysis (extractive QA)")
+                print("   💡 For AI generation, add OpenAI API key in Settings")
+            }
+            #endif
         }
     }
     

@@ -245,26 +245,30 @@ struct SettingsView: View {
         
         switch selectedModel {
         case .appleIntelligence:
-            if #available(iOS 18.0, *) {
-                newService = AppleIntelligenceService()
+            #if canImport(FoundationModels)
+            if #available(iOS 26.0, *) {
+                newService = AppleFoundationLLMService()
             } else {
-                newService = MockLLMService()
+                newService = OnDeviceAnalysisService()
             }
+            #else
+            newService = OnDeviceAnalysisService()
+            #endif
             
         case .appleChatGPT:
             if #available(iOS 18.1, *) {
-                // TODO: Implement ChatGPTService when API available
-                newService = MockLLMService()
+                newService = AppleChatGPTExtensionService()
             } else {
-                newService = MockLLMService()
+                newService = OnDeviceAnalysisService()
             }
             
         case .openAIDirect:
-            // TODO: Implement OpenAIService with API key
-            newService = MockLLMService()
+            let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey") ?? ""
+            let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+            newService = OpenAILLMService(apiKey: apiKey, model: model)
             
         case .mock:
-            newService = MockLLMService()
+            newService = OnDeviceAnalysisService()
         }
         
         await ragService.updateLLMService(newService)
