@@ -8,7 +8,7 @@
 import Foundation
 
 /// Represents a semantically meaningful chunk of a document with its embedding
-struct DocumentChunk: Identifiable, Codable {
+struct DocumentChunk: Identifiable, Codable, Sendable {
     let id: UUID
     let documentId: UUID
     let content: String
@@ -25,7 +25,7 @@ struct DocumentChunk: Identifiable, Codable {
 }
 
 /// Metadata for tracking chunk provenance and semantics
-struct ChunkMetadata: Codable {
+struct ChunkMetadata: Codable, Sendable {
     let chunkIndex: Int
     let startPosition: Int
     let endPosition: Int

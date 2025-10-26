@@ -9,6 +9,10 @@ import Foundation
 import Combine
 import NaturalLanguage
 
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
 /// Main orchestrator for the RAG (Retrieval-Augmented Generation) pipeline
 /// Coordinates document processing, embedding, retrieval, and generation
 class RAGService: ObservableObject {
@@ -19,13 +23,35 @@ class RAGService: ObservableObject {
     private let embeddingService: EmbeddingService
     private let vectorDatabase: VectorDatabase
     
-    // MARK: - Published State
+    /// Helper to get document name by ID
+    @MainActor
+    func getDocumentName(for documentId: UUID) -> String {
+        return documents.first(where: { $0.id == documentId })?.filename ?? "Unknown"
+    }
     
-    @Published var documents: [Document] = []
-    @Published var isProcessing: Bool = false
-    @Published var processingStatus: String = ""
-    @Published var lastError: String? = nil // User-facing error message
-    @Published var lastProcessingSummary: ProcessingSummary? = nil // Detailed completion stats
+    /// Enrich retrieved chunks with source information for citations
+    @MainActor
+    private func addSourceInfo(_ chunks: [RetrievedChunk]) -> [RetrievedChunk] {
+        return chunks.map { retrieved in
+            let docName = documents.first(where: { $0.id == retrieved.chunk.documentId })?.filename ?? "Unknown"
+            let pageNum = retrieved.chunk.metadata.pageNumber
+            return RetrievedChunk(
+                chunk: retrieved.chunk,
+                similarityScore: retrieved.similarityScore,
+                rank: retrieved.rank,
+                sourceDocument: docName,
+                pageNumber: pageNum
+            )
+        }
+    }
+    
+    // MARK: - Published State (MainActor-isolated for SwiftUI)
+    
+    @MainActor @Published var documents: [Document] = []
+    @MainActor @Published var isProcessing: Bool = false
+    @MainActor @Published var processingStatus: String = ""
+    @MainActor @Published var lastError: String? = nil // User-facing error message
+    @MainActor @Published var lastProcessingSummary: ProcessingSummary? = nil // Detailed completion stats
     
     private(set) var totalChunksStored: Int = 0
     
@@ -40,14 +66,14 @@ class RAGService: ObservableObject {
     // MARK: - Initialization
     
     init(
-        documentProcessor: DocumentProcessor = DocumentProcessor(),
-        embeddingService: EmbeddingService = EmbeddingService(),
-        vectorDatabase: VectorDatabase = InMemoryVectorDatabase(),
+        documentProcessor: DocumentProcessor? = nil,
+        embeddingService: EmbeddingService? = nil,
+        vectorDatabase: VectorDatabase? = nil,
         llmService: LLMService? = nil
     ) {
-        self.documentProcessor = documentProcessor
-        self.embeddingService = embeddingService
-        self.vectorDatabase = vectorDatabase
+        self.documentProcessor = documentProcessor ?? DocumentProcessor()
+        self.embeddingService = embeddingService ?? EmbeddingService()
+        self.vectorDatabase = vectorDatabase ?? PersistentVectorDatabase()
         
         // Priority order for LLM selection:
         // 1. Custom service provided by caller
@@ -58,46 +84,141 @@ class RAGService: ObservableObject {
         if let service = llmService {
             // User provided custom service (e.g., from Settings)
             self._llmService = service
-            print("✓ Using custom LLM service: \(service.modelName)")
+            Log.info("✓ Using custom LLM service: \(service.modelName)", category: .initialization)
         } else {
-            // Priority order for automatic LLM selection:
-            // 1. Apple Foundation Models (iOS 26+, on-device + PCC)
-            // 2. OpenAI Direct API (user's key)
-            // 3. Apple ChatGPT Extension (iOS 18.1+)
-            // 4. On-Device Analysis (extractive QA, always available)
+            // Check user's selected model from Settings
+            let selectedModelRaw = UserDefaults.standard.string(forKey: "selectedLLMModel") ?? "apple_intelligence"
             
-            #if canImport(FoundationModels)
-            if #available(iOS 26.0, *),
-               AppleFoundationLLMService().isAvailable {
-                // Priority 1: Apple's Foundation Models with on-device + PCC
-                self._llmService = AppleFoundationLLMService()
-                print("✓ Using Apple Foundation Models (on-device + PCC)")
-            } else if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
-                      !apiKey.isEmpty {
-                // Priority 2: OpenAI Direct API with user's key
-                let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-                self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
-                print("✓ Using OpenAI Direct: \(selectedModel)")
-            } else {
-                // Priority 3: On-Device Analysis (extractive QA, no AI model needed)
-                self._llmService = OnDeviceAnalysisService()
+            Log.info("🔧 Initializing with user's selected model: \(selectedModelRaw)", category: .initialization)
+            
+            // Try to instantiate the user's selected model first
+            var service: LLMService?
+            
+            switch selectedModelRaw {
+            case "openai":
+                if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
+                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+                    service = OpenAILLMService(apiKey: apiKey, model: model)
+                    print("✓ Using OpenAI Direct: \(model)")
+                }
+                
+            case "apple_intelligence":
+                #if canImport(FoundationModels)
+                if #available(iOS 26.0, *) {
+                    let foundationService = AppleFoundationLLMService()
+                    if foundationService.isAvailable {
+                        service = foundationService
+                        foundationService.startWarmup()  // Start preloading model
+                        print("✓ Using Apple Foundation Models (on-device + PCC)")
+                        print("  🔥 Preloading model in background for instant first query")
+                    }
+                }
+                #endif
+                
+            case "chatgpt_extension":
+                if #available(iOS 18.1, *) {
+                    let chatGPTService = AppleChatGPTExtensionService()
+                    if chatGPTService.isAvailable {
+                        service = chatGPTService
+                        print("✓ Using ChatGPT Extension (Apple Intelligence)")
+                    } else {
+                        print("⚠️  ChatGPT Extension not available - check Settings > Apple Intelligence & Siri")
+                    }
+                }
+                
+            case "on_device_analysis":
+                service = OnDeviceAnalysisService()
                 print("✓ Using On-Device Analysis (extractive QA)")
-                print("   💡 For AI generation, add OpenAI API key in Settings or upgrade to iOS 26")
+                
+            default:
+                print("⚠️  Unknown model type: \(selectedModelRaw)")
             }
-            #else
-            if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
-               !apiKey.isEmpty {
-                // Priority 2: OpenAI Direct API with user's key
-                let selectedModel = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-                self._llmService = OpenAILLMService(apiKey: apiKey, model: selectedModel)
-                print("✓ Using OpenAI Direct: \(selectedModel)")
-            } else {
-                // Priority 3: On-Device Analysis (extractive QA, no AI model needed)
-                self._llmService = OnDeviceAnalysisService()
-                print("✓ Using On-Device Analysis (extractive QA)")
-                print("   💡 For AI generation, add OpenAI API key in Settings")
+            
+            // If selected model unavailable, try fallback order
+            if service == nil {
+                print("⚠️  Selected model '\(selectedModelRaw)' unavailable, trying fallbacks...")
+                
+                // Fallback order: Apple Intelligence → OpenAI → On-Device Analysis
+                #if canImport(FoundationModels)
+                if #available(iOS 26.0, *) {
+                    let foundationService = AppleFoundationLLMService()
+                    if foundationService.isAvailable {
+                        service = foundationService
+                        print("✓ Fallback: Using Apple Foundation Models")
+                    }
+                }
+                #endif
+                
+                if service == nil,
+                   let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
+                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+                    service = OpenAILLMService(apiKey: apiKey, model: model)
+                    print("✓ Fallback: Using OpenAI Direct: \(model)")
+                }
+                
+                if service == nil {
+                    service = OnDeviceAnalysisService()
+                    print("✓ Fallback: Using On-Device Analysis (extractive QA)")
+                }
             }
-            #endif
+            
+            // Assign the service (guaranteed to be non-nil at this point)
+            self._llmService = service!
+            
+            // Connect tool handler for agentic RAG (Foundation Models only)
+            self._llmService.toolHandler = self
+            print("🔗 Tool handler connected for agentic RAG")
+        }
+        
+        // Load persisted documents metadata
+        loadDocumentsFromDisk()
+    }
+    
+    // MARK: - Document Persistence
+    
+    private var documentsStorageURL: URL {
+        let fileManager = FileManager.default
+        let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appDirectory = appSupportURL.appendingPathComponent("RAGMLCore", isDirectory: true)
+        try? fileManager.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        return appDirectory.appendingPathComponent("documents_metadata.json")
+    }
+    
+    private func loadDocumentsFromDisk() {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: documentsStorageURL.path) else {
+            print("ℹ️  [RAGService] No existing documents metadata found")
+            return
+        }
+        
+        do {
+            let data = try Data(contentsOf: documentsStorageURL)
+            let decoder = JSONDecoder()
+            let loadedDocuments = try decoder.decode([Document].self, from: data)
+            
+            Task { @MainActor in
+                self.documents = loadedDocuments
+                self.totalChunksStored = loadedDocuments.reduce(0) { $0 + $1.totalChunks }
+                print("✅ [RAGService] Loaded \(loadedDocuments.count) documents (\(totalChunksStored) chunks)")
+            }
+        } catch {
+            print("❌ [RAGService] Failed to load documents metadata: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveDocumentsToDisk() {
+        Task {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                let data = try encoder.encode(documents)
+                try data.write(to: documentsStorageURL, options: .atomic)
+                print("💾 [RAGService] Saved \(documents.count) documents metadata")
+            } catch {
+                print("❌ [RAGService] Failed to save documents metadata: \(error.localizedDescription)")
+            }
         }
     }
     
@@ -118,6 +239,11 @@ class RAGService: ObservableObject {
     func addDocument(at url: URL) async throws {
         let filename = url.lastPathComponent
         let pipelineStartTime = Date()
+        TelemetryCenter.emit(
+            .ingestion,
+            title: "Ingestion started",
+            metadata: ["file": filename]
+        )
         
         await MainActor.run {
             isProcessing = true
@@ -139,9 +265,19 @@ class RAGService: ObservableObject {
             let extractionStartTime = Date()
             let (document, textChunks) = try await documentProcessor.processDocument(at: url)
             let extractionTime = Date().timeIntervalSince(extractionStartTime)
-            
             let totalChars = textChunks.reduce(0) { $0 + $1.count }
             let totalWords = textChunks.reduce(0) { $0 + $1.split(separator: " ").count }
+
+            TelemetryCenter.emit(
+                .ingestion,
+                title: "Extraction complete",
+                metadata: [
+                    "file": filename,
+                    "chunks": "\(textChunks.count)",
+                    "words": "\(totalWords)"
+                ],
+                duration: extractionTime
+            )
             
             await MainActor.run {
                 processingStatus = "\(filename) • Chunking (\(textChunks.count) chunks, \(totalWords) words)"
@@ -174,6 +310,16 @@ class RAGService: ObservableObject {
             let embeddingTime = Date().timeIntervalSince(embeddingStartTime)
             let avgTimePerChunk = embeddingTime / Double(textChunks.count)
             print("   ✅ All embeddings generated in \(String(format: "%.2f", embeddingTime))s (avg \(String(format: "%.0f", avgTimePerChunk * 1000))ms/chunk)")
+            TelemetryCenter.emit(
+                .embedding,
+                title: "Embeddings generated",
+                metadata: [
+                    "file": filename,
+                    "chunks": "\(textChunks.count)",
+                    "dimensions": "\(embeddings.first?.count ?? 0)"
+                ],
+                duration: embeddingTime
+            )
             
             await MainActor.run {
                 processingStatus = "\(filename) • Storing"
@@ -195,9 +341,26 @@ class RAGService: ObservableObject {
                 )
             }
             let chunkingTime = Date().timeIntervalSince(chunkingStartTime)
+            TelemetryCenter.emit(
+                .storage,
+                title: "Chunks prepared",
+                metadata: [
+                    "file": filename,
+                    "count": "\(documentChunks.count)"
+                ],
+                duration: chunkingTime
+            )
             
             // Step 4: Store chunks in vector database
             try await vectorDatabase.storeBatch(chunks: documentChunks)
+            TelemetryCenter.emit(
+                .storage,
+                title: "Chunks stored",
+                metadata: [
+                    "file": filename,
+                    "count": "\(documentChunks.count)"
+                ]
+            )
             
             // Calculate total pipeline time
             let totalTime = Date().timeIntervalSince(pipelineStartTime)
@@ -282,6 +445,20 @@ class RAGService: ObservableObject {
                 processingStatus = ""
                 lastProcessingSummary = summary
             }
+
+            TelemetryCenter.emit(
+                .ingestion,
+                title: "Document indexed",
+                metadata: [
+                    "file": filename,
+                    "chunks": "\(documentChunks.count)",
+                    "size": fileSizeStr
+                ],
+                duration: totalTime
+            )
+            
+            // Save documents metadata to disk
+            saveDocumentsToDisk()
             
             // Small success flash
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
@@ -308,6 +485,15 @@ class RAGService: ObservableObject {
             
             // Re-throw with context
             print("❌ [RAGService] Failed to add document: \(error.localizedDescription)")
+            TelemetryCenter.emit(
+                .ingestion,
+                severity: .error,
+                title: "Ingestion failed",
+                metadata: [
+                    "file": filename,
+                    "error": error.localizedDescription
+                ]
+            )
             throw error
         }
     }
@@ -321,6 +507,8 @@ class RAGService: ObservableObject {
             totalChunksStored -= document.totalChunks
         }
         
+        saveDocumentsToDisk()
+        
         print("✓ Removed document: \(document.filename)")
     }
     
@@ -333,20 +521,39 @@ class RAGService: ObservableObject {
             totalChunksStored = 0
         }
         
+        saveDocumentsToDisk()
+        
         print("✓ Cleared all documents from knowledge base")
     }
     
     // MARK: - RAG Query Pipeline
     
-    /// Execute a RAG query: embed query → retrieve context → generate response
+    /// Execute a RAG query: expand query → embed → hybrid search → re-rank → generate response
     func query(_ question: String, topK: Int = 3, config: InferenceConfig? = nil) async throws -> RAGResponse {
         let inferenceConfig = config ?? InferenceConfig()
+        // Query heuristics for short/generic prompts
+        let queryWords = question.split(separator: " ").count
+        let effectiveTopK = (queryWords <= 2) ? min(topK, 3) : min(topK, 10)
+        // Fetch current stored chunk count from vector database (fallback to cached total)
+        let totalStored = (try? await vectorDatabase.count()) ?? totalChunksStored
         
-        print("\n╔══════════════════════════════════════════════════════════════╗")
-        print("║ RAG QUERY PIPELINE                                           ║")
-        print("╚══════════════════════════════════════════════════════════════╝")
-        print("\n📝 Query: \(question)")
-        print("🎯 Retrieving top \(topK) chunks from \(totalChunksStored) total")
+        Log.box(
+            "ENHANCED RAG QUERY PIPELINE",
+            level: .info,
+            category: .pipeline,
+            content: [
+                "📝 Query: \(question)",
+                "🎯 Retrieving top \(effectiveTopK) chunks from \(totalStored) total"
+            ]
+        )
+
+        TelemetryCenter.emit(
+            .system,
+            title: "Query received",
+            metadata: [
+                "question": String(question.prefix(80))
+            ]
+        )
         
         do {
             // Clear any previous errors
@@ -356,156 +563,498 @@ class RAGService: ObservableObject {
             
             // Edge case: Empty query
             guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                print("❌ [RAGService] Empty query string")
+                Log.error("❌ [RAGService] Empty query string", category: .pipeline)
+                TelemetryCenter.emit(
+                    .system,
+                    severity: .error,
+                    title: "Query rejected",
+                    metadata: ["reason": "Empty input"]
+                )
                 throw RAGServiceError.emptyQuery
             }
             
             let pipelineStartTime = Date()
-            let ragQuery = RAGQuery(query: question, topK: topK)
+            let ragQuery = RAGQuery(query: question, topK: effectiveTopK)
             
-            // Check if we have documents for RAG or just direct LLM chat
-            let hasDocuments = totalChunksStored > 0
+            // Small-talk/direct-chat bypass for trivial inputs (no RAG)
+            let lowerQ = question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if queryWords <= 2 {
+                let smallTalkSet: Set<String> = ["hi","hello","hey","yo","sup","ok","thanks","thank you","bye","goodbye","hola","hiya"]
+                if smallTalkSet.contains(lowerQ) {
+                    return try await generateDirectChatResponse(
+                        question: question,
+                        ragQuery: ragQuery,
+                        inferenceConfig: inferenceConfig,
+                        pipelineStartTime: pipelineStartTime,
+                        retrievalTime: 0,
+                        fallbackNote: "Short greeting detected; replied without document retrieval."
+                    )
+                }
+            }
+            
+            // Check if we have documents for RAG or just direct LLM chat (use live DB count)
+            let hasDocuments = totalStored > 0
             
             if hasDocuments {
-                // Full RAG pipeline with document retrieval
-                // Step 1: Embed the user's query
-                print("\n━━━ Step 1: Query Embedding ━━━")
+                // ENHANCED RAG pipeline with query expansion + hybrid search + re-ranking
+                
+                // Step 1: Query Expansion
+                Log.section("Step 1: Query Expansion", level: .info, category: .pipeline)
+                let expansionStartTime = Date()
+                let queryEnhancer = QueryEnhancementService()
+                let expandedQueries = queryEnhancer.expandQuery(question)
+                let expansionTime = Date().timeIntervalSince(expansionStartTime)
+                Log.info("✓ Expanded to \(expandedQueries.count) query variations in \(String(format: "%.0f", expansionTime * 1000))ms", category: .pipeline)
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "Query expanded",
+                    metadata: [
+                        "variants": "\(expandedQueries.count)"
+                    ],
+                    duration: expansionTime
+                )
+                
+                // Step 2: Embed the user's query (primary query only)
+                Log.section("Step 2: Query Embedding", level: .info, category: .pipeline)
                 let embeddingStartTime = Date()
                 let queryEmbedding = try await embeddingService.generateEmbedding(for: question)
                 let embeddingTime = Date().timeIntervalSince(embeddingStartTime)
             
                 let embeddingMagnitude = sqrt(queryEmbedding.map { $0 * $0 }.reduce(0, +))
-                print("✓ Generated \(queryEmbedding.count)-dimensional embedding")
-                print("  Vector magnitude: \(String(format: "%.4f", embeddingMagnitude))")
-                print("  Time: \(String(format: "%.0f", embeddingTime * 1000))ms")
+                Log.info("✓ Generated \(queryEmbedding.count)-dimensional embedding", category: .embedding)
+                Log.debug("  Vector magnitude: \(String(format: "%.4f", embeddingMagnitude))", category: .embedding)
+                Log.debug("  Time: \(String(format: "%.0f", embeddingTime * 1000))ms", category: .performance)
+                TelemetryCenter.emit(
+                    .embedding,
+                    title: "Query embedding",
+                    metadata: [
+                        "dimensions": "\(queryEmbedding.count)"
+                    ],
+                    duration: embeddingTime
+                )
                 
-                // Step 2: Retrieve most similar chunks from vector database
-                print("\n━━━ Step 2: Vector Search ━━━")
+                // Step 3: Hybrid Search (vector + BM25 keyword search with RRF fusion)
+                Log.section("Step 3: Hybrid Search (Vector + BM25)", level: .info, category: .pipeline)
                 let retrievalStartTime = Date()
-                let retrievedChunks = try await vectorDatabase.search(embedding: queryEmbedding, topK: topK)
+                let hybridSearch = HybridSearchService(vectorDatabase: vectorDatabase)
+                // Use expanded queries for keyword search (original for vector)
+                let retrievedChunks = try await hybridSearch.search(
+                    query: expandedQueries.joined(separator: " "),  // Combine expansions
+                    embedding: queryEmbedding,
+                    topK: effectiveTopK * 2  // Retrieve 2x for re-ranking (clamped)
+                )
+                
+                // Measure retrieval time before any MainActor work
                 let retrievalTime = Date().timeIntervalSince(retrievalStartTime)
                 
-                // Edge case: No relevant chunks found (shouldn't happen with proper database)
-                guard !retrievedChunks.isEmpty else {
-                    print("⚠️  [RAGService] No chunks retrieved (database may be empty)")
-                    throw RAGServiceError.retrievalFailed
+                // Edge case: No relevant chunks found - gracefully fallback to direct chat
+                if retrievedChunks.isEmpty {
+                    Log.warning("⚠️  [RAGService] No chunks retrieved (database may be empty)", category: .retrieval)
+                    TelemetryCenter.emit(
+                        .retrieval,
+                        severity: .warning,
+                        title: "No chunks retrieved",
+                        metadata: [
+                            "question": String(question.prefix(60))
+                        ],
+                        duration: retrievalTime
+                    )
+                    // Fallback to direct LLM chat mode
+                    return try await generateDirectChatResponse(
+                        question: question,
+                        ragQuery: ragQuery,
+                        inferenceConfig: inferenceConfig,
+                        pipelineStartTime: pipelineStartTime,
+                        retrievalTime: retrievalTime,
+                        fallbackNote: "No relevant document context found; replied without RAG context."
+                    )
                 }
                 
-                print("✓ Retrieved \(retrievedChunks.count) chunks in \(String(format: "%.0f", retrievalTime * 1000))ms")
-                print("\nRetrieved chunks (ranked by similarity):")
-                for (index, chunk) in retrievedChunks.enumerated() {
-                    let preview = chunk.chunk.content.prefix(80).replacingOccurrences(of: "\n", with: " ")
-                    print("  [\(index + 1)] Score: \(String(format: "%.4f", chunk.similarityScore))")
-                    print("      \"\(preview)...\"\n")
+                // Add source information for citations with a safe MainActor snapshot
+                let docsSnapshot = await MainActor.run { self.documents }
+                let chunksWithSources: [RetrievedChunk] = retrievedChunks.map { retrieved in
+                    let docName = docsSnapshot.first(where: { $0.id == retrieved.chunk.documentId })?.filename ?? "Unknown"
+                    let pageNum = retrieved.chunk.metadata.pageNumber
+                    return RetrievedChunk(
+                        chunk: retrieved.chunk,
+                        similarityScore: retrieved.similarityScore,
+                        rank: retrieved.rank,
+                        sourceDocument: docName,
+                        pageNumber: pageNum
+                    )
                 }
                 
-                // Step 3: Construct context from retrieved chunks
-                let rawContext = formatContext(retrievedChunks)
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "Hybrid retrieval",
+                    metadata: [
+                        "candidates": "\(chunksWithSources.count)",
+                        "topK": "\(effectiveTopK * 2)"
+                    ],
+                    duration: retrievalTime
+                )
                 
-                // Smart context truncation for Apple Intelligence (limited context window ~4K chars)
-                let maxContextChars = 3500  // Leave room for prompt + response
-                let context: String
-                if rawContext.count > maxContextChars {
-                    print("\n⚠️  Context too large (\(rawContext.count) chars), truncating to \(maxContextChars) chars")
-                    // Take only the top-ranked chunks until we hit the limit
-                    var truncatedContext = ""
-                    var chunkCount = 0
-                    for retrieved in retrievedChunks {
-                        let chunkText = "Document excerpt (relevance: \(String(format: "%.2f", retrieved.similarityScore))):\n\(retrieved.chunk.content)\n\n"
-                        if truncatedContext.count + chunkText.count <= maxContextChars {
-                            truncatedContext += chunkText
-                            chunkCount += 1
-                        } else {
-                            break
-                        }
+                
+                
+                Log.info("✓ Retrieved \(chunksWithSources.count) chunks with hybrid fusion", category: .retrieval)
+                Log.debug("  Time: \(String(format: "%.0f", retrievalTime * 1000))ms", category: .performance)
+                if let topChunk = chunksWithSources.first {
+                    Log.debug("  Top semantic score: \(String(format: "%.4f", topChunk.similarityScore))", category: .retrieval)
+                    if !topChunk.sourceDocument.isEmpty {
+                        Log.debug("  Source: \(topChunk.sourceDocument)\(topChunk.pageNumber.map { " (p. \($0))" } ?? "")", category: .retrieval)
                     }
-                    context = truncatedContext
-                    print("✓ Using top \(chunkCount) chunks (\(context.count) chars)")
-                } else {
-                    context = rawContext
+                    // BM25 and fusion scores would be displayed here once metadata storage is enhanced
                 }
+                
+                // Step 4: Re-rank results with multiple signals
+                Log.section("Step 4: Multi-Signal Re-ranking", level: .info, category: .pipeline)
+                let engine = RAGEngine()
+                let rerankStartTime = Date()
+                let rerankedChunks = await engine.rerank(
+                    chunks: chunksWithSources,
+                    query: question,
+                    topK: effectiveTopK * 3  // Get more candidates for MMR diversification (clamped)
+                )
+                let rerankTime = Date().timeIntervalSince(rerankStartTime)
+                Log.info("✓ Re-ranked to top \(rerankedChunks.count) in \(String(format: "%.0f", rerankTime * 1000))ms", category: .retrieval)
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "Re-ranking complete",
+                    metadata: [
+                        "candidates": "\(rerankedChunks.count)"
+                    ],
+                    duration: rerankTime
+                )
+                
+                // Step 4.3: Filter low-confidence chunks (critical for medical accuracy)
+                let minSimilarity: Float = 0.35  // Threshold: chunks below this are likely not relevant
+                let filteredChunks = await engine.filterBySimilarity(
+                    chunks: rerankedChunks,
+                    min: minSimilarity
+                )
+                
+                if filteredChunks.count < rerankedChunks.count {
+                    let dropped = rerankedChunks.count - filteredChunks.count
+                    Log.warning("   ⚠️  Filtered out \(dropped) low-confidence chunks (< \(String(format: "%.2f", minSimilarity)))", category: .retrieval)
+                    TelemetryCenter.emit(
+                        .retrieval,
+                        severity: .warning,
+                        title: "Low-confidence filtered",
+                        metadata: ["dropped": "\(dropped)"]
+                    )
+                }
+                
+                // Edge case: No high-confidence chunks
+                guard !filteredChunks.isEmpty else {
+                    Log.error("   ❌ No high-confidence chunks found (all below threshold)", category: .retrieval)
+                    TelemetryCenter.emit(
+                        .retrieval,
+                        severity: .error,
+                        title: "No high-confidence context",
+                        metadata: [
+                            "threshold": String(format: "%.2f", minSimilarity)
+                        ]
+                    )
+                    throw RAGServiceError.noRelevantContext
+                }
+                
+                // Step 4.5: Apply MMR for diversity (critical for medical/comprehensive coverage)
+                Log.section("Step 4.5: MMR Diversification", level: .info, category: .pipeline)
+                let mmrStartTime = Date()
+                let diverseChunks = await engine.applyMMR(
+                    candidates: filteredChunks,
+                    queryEmbedding: queryEmbedding,
+                    topK: effectiveTopK,  // Clamped for short queries
+                    lambda: 0.7  // 0.7 = balance relevance vs diversity (higher = more relevance)
+                )
+                let mmrTime = Date().timeIntervalSince(mmrStartTime)
+                Log.info("✓ Selected \(diverseChunks.count) diverse chunks in \(String(format: "%.0f", mmrTime * 1000))ms", category: .retrieval)
+                Log.debug("  λ=0.7 (70% relevance, 30% diversity)", category: .retrieval)
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "MMR diversification",
+                    metadata: [
+                        "selected": "\(diverseChunks.count)",
+                        "lambda": "0.7"
+                    ],
+                    duration: mmrTime
+                )
+                
+                Log.verbose("\nFinal diverse chunks:", category: .retrieval)
+                for (index, chunk) in diverseChunks.enumerated() {
+                    let preview = chunk.chunk.content.prefix(80).replacingOccurrences(of: "\n", with: " ")
+                    let source = chunk.sourceDocument.isEmpty ? "" : " | \(chunk.sourceDocument)\(chunk.pageNumber.map { " p.\($0)" } ?? "")"
+                    Log.verbose("  [\(index + 1)] Similarity: \(String(format: "%.4f", chunk.similarityScore))\(source)", category: .retrieval)
+                    Log.verbose("      \"\(preview)...\"", category: .retrieval)
+                }
+                
+                // Step 5: Construct context from diverse chunks (off-main)
+                // Note: rawContext assembly is handled via engine.assembleContext with size limits
+                
+                // Smart context assembly: Use as many chunks as fit within the model's context window
+                // Apple Intelligence: ~3500 chars for on-device/PCC (leaves room for prompt + response)
+                // OpenAI Context Windows:
+                //   - GPT-4o: 128K tokens (~512K chars)
+                //   - GPT-5: 400K tokens (~1.6M chars) 🚀
+                let maxContextChars: Int
+                if llmService is OpenAILLMService {
+                    // GPT-5 has 400K token context (~1.6M chars theoretical)
+                    // Use 200K chars conservatively (leaves ~200K for prompt + response)
+                    maxContextChars = 200000  // 200K chars = ~50K tokens
+                } else if llmService is AppleFoundationLLMService {
+                    // Tighter context for Apple FM to leave room for tool scaffolding and output
+                    maxContextChars = 1500
+                } else {
+                    maxContextChars = 3500
+                }
+                
+                
+                let (context, actualChunksUsed) = await engine.assembleContext(
+                    chunks: diverseChunks,
+                    maxChars: maxContextChars
+                )
+                Log.info("   ✓ Using \(actualChunksUsed)/\(diverseChunks.count) chunks (\(context.count) chars)", category: .pipeline)
                 
                 let contextSize = context.count
                 let contextWords = context.split(separator: " ").count
                 
-                print("━━━ Step 3: Context Assembly ━━━")
-                print("✓ Assembled context: \(contextSize) chars, \(contextWords) words")
+                Log.section("Step 5: Context Assembly Complete", level: .info, category: .pipeline)
+                Log.info("✓ Final context: \(contextSize) chars, \(contextWords) words from \(actualChunksUsed) chunks", category: .pipeline)
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "Context assembled",
+                    metadata: [
+                        "chunks": "\(actualChunksUsed)",
+                        "chars": "\(contextSize)"
+                    ]
+                )
                 
-                // Step 4: Generate response using LLM with augmented context
-                print("\n━━━ Step 4: LLM Generation ━━━")
+                // Step 6: Generate response using LLM with augmented context
+                Log.section("Step 6: LLM Generation", level: .info, category: .pipeline)
                 let generationStartTime = Date()
-                let llmResponse = try await llmService.generate(
-                    prompt: question,
-                    context: context,
-                    config: inferenceConfig
-                )
+                
+                // Token budgeting for Apple FM (conservative ~4K window)
+                var genConfig = inferenceConfig
+                do {
+                    let window = 4000
+                    let safety = 400
+                    let estPromptTokens = max(0, (question.count + context.count) / 4)
+                    let available = max(128, window - safety - estPromptTokens)
+                    if genConfig.maxTokens > available {
+                        genConfig.maxTokens = available
+                    }
+                }
+                
+                // Attempt generation with retry on context-overflow
+                var llmResponse: LLMResponse
+                do {
+                    llmResponse = try await llmService.generate(
+                        prompt: question,
+                        context: context,
+                        config: genConfig
+                    )
+                } catch {
+                    let message = error.localizedDescription.lowercased()
+                    if message.contains("context") && (message.contains("exceed") || message.contains("exceeded")) {
+                        // Retry with halved context and smaller maxTokens
+                        let reducedMax = max(512, genConfig.maxTokens / 2)
+                        let (context2, _) = await engine.assembleContext(
+                            chunks: diverseChunks,
+                            maxChars: max(800, maxContextChars / 2)
+                        )
+                        var retryConfig = genConfig
+                        retryConfig.maxTokens = reducedMax
+                        TelemetryCenter.emit(
+                            .system,
+                            severity: .warning,
+                            title: "Retry due to context overflow",
+                            metadata: ["initialTokens": "\(genConfig.maxTokens)", "reducedTokens": "\(reducedMax)"]
+                        )
+                        llmResponse = try await llmService.generate(
+                            prompt: question,
+                            context: context2,
+                            config: retryConfig
+                        )
+                    } else {
+                        throw error
+                    }
+                }
+                
                 let generationTime = Date().timeIntervalSince(generationStartTime)
-                
-                print("✓ Response generated")
-                print("  Model: \(llmService.modelName)")
-                print("  Generation time: \(String(format: "%.2f", generationTime))s")
-                print("  Tokens: \(llmResponse.tokensGenerated)")
-                print("  Speed: \(String(format: "%.1f", llmResponse.tokensPerSecond ?? 0)) tokens/sec")
-                
-                // Step 5: Package results
-                let pipelineTotalTime = Date().timeIntervalSince(pipelineStartTime)
-                
-                print("\n╔══════════════════════════════════════════════════════════════╗")
-                print("║ PIPELINE COMPLETE ✓                                          ║")
-                print("╚══════════════════════════════════════════════════════════════╝")
-                print("Total time: \(String(format: "%.2f", pipelineTotalTime))s")
-                print("  - Embedding: \(String(format: "%.0f", embeddingTime * 1000))ms")
-                print("  - Retrieval: \(String(format: "%.0f", retrievalTime * 1000))ms")
-                print("  - Generation: \(String(format: "%.2f", generationTime))s")
-                print("")
-                
-                let metadata = ResponseMetadata(
-                    timeToFirstToken: llmResponse.timeToFirstToken,
-                    totalGenerationTime: llmResponse.totalTime,
-                    tokensGenerated: llmResponse.tokensGenerated,
-                    tokensPerSecond: llmResponse.tokensPerSecond,
-                    modelUsed: llmService.modelName,
-                    retrievalTime: retrievalTime
+                TelemetryCenter.emit(
+                    .generation,
+                    title: "Response generated",
+                    metadata: [
+                        "model": llmService.modelName,
+                        "tokens": "\(llmResponse.tokensGenerated)"
+                    ],
+                    duration: generationTime
                 )
                 
-                let response = RAGResponse(
-                    queryId: ragQuery.id,
-                    retrievedChunks: retrievedChunks,
-                    generatedResponse: llmResponse.text,
-                    metadata: metadata
-                )
-                
-                let totalTime = Date().timeIntervalSince(pipelineStartTime)
-                print("✅ [RAGService] RAG pipeline complete in \(String(format: "%.2f", totalTime))s")
-                printQueryStats(query: question, response: response)
-                
-                return response
+                // Wrap all printing in error handling to prevent crashes
+                do {
+                    Log.info("✓ Response generated", category: .llm)
+                    Log.info("  Model: \(llmService.modelName)", category: .llm)
+                    Log.info("  Generation time: \(String(format: "%.2f", generationTime))s", category: .performance)
+                    
+                    // Access response text safely
+                    let responseText = llmResponse.text
+                    Log.debug("  Response length: \(responseText.count) chars", category: .llm)
+                    
+                    if llmResponse.tokensGenerated > 0 {
+                        Log.debug("  Tokens: \(llmResponse.tokensGenerated)", category: .llm)
+                        if let tps = llmResponse.tokensPerSecond {
+                            Log.debug("  Speed: \(String(format: "%.1f", tps)) tokens/sec", category: .performance)
+                        }
+                    }
+                    
+                    // Verify we got a response
+                    guard !responseText.isEmpty else {
+                        Log.warning("⚠️  Warning: LLM returned empty response", category: .llm)
+                        throw RAGServiceError.modelNotAvailable
+                    }
+                    
+                    // Step 7: Calculate confidence score and quality warnings
+                    Log.section("Step 7: Quality Assessment", level: .info, category: .pipeline)
+                    let totalDocsCount = await MainActor.run { documents.count }
+                    let (confidenceScore, qualityWarnings) = await engine.assessResponseQuality(
+                        chunks: diverseChunks,
+                        query: question,
+                        totalDocs: totalDocsCount
+                    )
+                    
+                    if !qualityWarnings.isEmpty {
+                        Log.warning("⚠️  Quality Warnings:", category: .pipeline)
+                        for warning in qualityWarnings {
+                            Log.warning("   • \(warning)", category: .pipeline)
+                        }
+                    }
+                    
+                    Log.info("📊 Confidence Score: \(String(format: "%.1f", confidenceScore * 100))%", category: .pipeline)
+                    TelemetryCenter.emit(
+                        .system,
+                        title: "Response evaluated",
+                        metadata: [
+                            "confidence": String(format: "%.2f", confidenceScore)
+                        ]
+                    )
+                    
+                    // Step 8: Package results
+                    let pipelineTotalTime = Date().timeIntervalSince(pipelineStartTime)
+                    
+                    Log.box(
+                        "ENHANCED PIPELINE COMPLETE ✓",
+                        level: .info,
+                        category: .pipeline,
+                        content: [
+                            "Total time: \(String(format: "%.2f", pipelineTotalTime))s",
+                            "  - Query Expansion: \(String(format: "%.0f", expansionTime * 1000))ms",
+                            "  - Embedding: \(String(format: "%.0f", embeddingTime * 1000))ms",
+                            "  - Hybrid Retrieval: \(String(format: "%.0f", retrievalTime * 1000))ms",
+                            "  - Re-ranking: \(String(format: "%.0f", rerankTime * 1000))ms",
+                            "  - MMR Diversification: \(String(format: "%.0f", mmrTime * 1000))ms",
+                            "  - Quality Assessment: <1ms",
+                            "  - Generation: \(String(format: "%.2f", generationTime))s"
+                        ]
+                    )
+                    TelemetryCenter.emit(
+                        .system,
+                        title: "Query complete",
+                        metadata: [
+                            "duration": String(format: "%.2f", pipelineTotalTime),
+                            "chunks": "\(diverseChunks.count)"
+                        ],
+                        duration: pipelineTotalTime
+                    )
+                    
+                    // Step 9: Create response metadata
+                    let metadata = ResponseMetadata(
+                        timeToFirstToken: llmResponse.timeToFirstToken,
+                        totalGenerationTime: llmResponse.totalTime,
+                        tokensGenerated: llmResponse.tokensGenerated,
+                        tokensPerSecond: llmResponse.tokensPerSecond,
+                        modelUsed: llmResponse.modelName ?? llmService.modelName,
+                        retrievalTime: retrievalTime
+                    )
+                    
+                    let response = RAGResponse(
+                        queryId: ragQuery.id,
+                        retrievedChunks: diverseChunks,
+                        generatedResponse: responseText,
+                        metadata: metadata,
+                        confidenceScore: confidenceScore,
+                        qualityWarnings: qualityWarnings
+                    )
+                    
+                    let totalTime = Date().timeIntervalSince(pipelineStartTime)
+                    print("✅ [RAGService] Enhanced RAG pipeline complete in \(String(format: "%.2f", totalTime))s")
+                    printQueryStats(query: question, response: response)
+                    
+                    return response
+                    
+                } catch {
+                    print("❌ Error during response processing: \(error)")
+                    // Still try to return something
+                    let metadata = ResponseMetadata(
+                        timeToFirstToken: nil,
+                        totalGenerationTime: generationTime,
+                        tokensGenerated: 0,
+                        tokensPerSecond: nil,
+                        modelUsed: llmService.modelName,
+                        retrievalTime: retrievalTime
+                    )
+                    
+                    return RAGResponse(
+                        queryId: ragQuery.id,
+                        retrievedChunks: diverseChunks,
+                        generatedResponse: "Error processing response",
+                        metadata: metadata,
+                        confidenceScore: 0.0,
+                        qualityWarnings: ["Error occurred during response processing"]
+                    )
+                }
                 
             } else {
                 // Direct LLM chat without documents
-                print("ℹ️  No documents loaded - using direct LLM chat mode")
+                Log.info("ℹ️  No documents loaded - using direct LLM chat mode", category: .pipeline)
+                TelemetryCenter.emit(
+                    .system,
+                    title: "Direct chat mode",
+                    metadata: ["model": llmService.modelName]
+                )
                 
-                print("\n━━━ Direct LLM Generation (No RAG) ━━━")
+                Log.section("Direct LLM Generation (No RAG)", level: .info, category: .pipeline)
                 let generationStartTime = Date()
+                
                 let llmResponse = try await llmService.generate(
                     prompt: question,
                     context: nil,  // No document context
                     config: inferenceConfig
                 )
-                let generationTime = Date().timeIntervalSince(generationStartTime)
                 
-                print("✓ Response generated")
-                print("  Model: \(llmService.modelName)")
-                print("  Generation time: \(String(format: "%.2f", generationTime))s")
-                print("  Tokens: \(llmResponse.tokensGenerated)")
-                print("  Speed: \(String(format: "%.1f", llmResponse.tokensPerSecond ?? 0)) tokens/sec")
+                let generationTime = Date().timeIntervalSince(generationStartTime)
+                TelemetryCenter.emit(
+                    .generation,
+                    title: "Response generated",
+                    metadata: [
+                        "model": llmService.modelName,
+                        "tokens": "\(llmResponse.tokensGenerated)"
+                    ],
+                    duration: generationTime
+                )
+                
+                Log.info("✓ Response generated", category: .llm)
+                Log.info("  Model: \(llmService.modelName)", category: .llm)
+                Log.info("  Generation time: \(String(format: "%.2f", generationTime))s", category: .performance)
+                Log.debug("  Tokens: \(llmResponse.tokensGenerated)", category: .llm)
+                Log.debug("  Speed: \(String(format: "%.1f", llmResponse.tokensPerSecond ?? 0)) tokens/sec", category: .performance)
                 
                 let metadata = ResponseMetadata(
                     timeToFirstToken: llmResponse.timeToFirstToken,
                     totalGenerationTime: llmResponse.totalTime,
                     tokensGenerated: llmResponse.tokensGenerated,
                     tokensPerSecond: llmResponse.tokensPerSecond,
-                    modelUsed: llmService.modelName,
+                    modelUsed: llmResponse.modelName ?? llmService.modelName,  // Use actual execution location if available
                     retrievalTime: 0  // No retrieval in direct chat mode
                 )
                 
@@ -517,7 +1066,16 @@ class RAGService: ObservableObject {
                 )
                 
                 let totalTime = Date().timeIntervalSince(pipelineStartTime)
-                print("✅ [RAGService] Direct chat complete in \(String(format: "%.2f", totalTime))s\n")
+                Log.info("✅ [RAGService] Direct chat complete in \(String(format: "%.2f", totalTime))s", category: .pipeline)
+                TelemetryCenter.emit(
+                    .system,
+                    title: "Query complete",
+                    metadata: [
+                        "duration": String(format: "%.2f", totalTime),
+                        "mode": "direct"
+                    ],
+                    duration: totalTime
+                )
                 
                 return response
             }
@@ -534,8 +1092,95 @@ class RAGService: ObservableObject {
             }
             
             print("❌ [RAGService] Query failed: \(error.localizedDescription)")
+            TelemetryCenter.emit(
+                .error,
+                severity: .error,
+                title: "Query failed",
+                metadata: ["reason": error.localizedDescription]
+            )
             throw error
         }
+    }
+    
+    // MARK: - Direct Chat Fallback Helper
+    
+    /// Generate a direct LLM response without document context.
+    /// Used as a graceful fallback when retrieval returns no results or documents are unavailable.
+    private func generateDirectChatResponse(
+        question: String,
+        ragQuery: RAGQuery,
+        inferenceConfig: InferenceConfig,
+        pipelineStartTime: Date,
+        retrievalTime: TimeInterval,
+        fallbackNote: String? = nil
+    ) async throws -> RAGResponse {
+        Log.info("ℹ️  Falling back to direct LLM chat mode", category: .pipeline)
+        TelemetryCenter.emit(
+            .system,
+            title: "Direct chat mode",
+            metadata: ["model": llmService.modelName]
+        )
+        
+        Log.section("Direct LLM Generation (No RAG)", level: .info, category: .pipeline)
+        let generationStartTime = Date()
+        
+        let llmResponse = try await llmService.generate(
+            prompt: question,
+            context: nil,  // No document context
+            config: inferenceConfig
+        )
+        
+        let generationTime = Date().timeIntervalSince(generationStartTime)
+        TelemetryCenter.emit(
+            .generation,
+            title: "Response generated",
+            metadata: [
+                "model": llmService.modelName,
+                "tokens": "\(llmResponse.tokensGenerated)"
+            ],
+            duration: generationTime
+        )
+        
+        Log.info("✓ Response generated", category: .llm)
+        Log.info("  Model: \(llmService.modelName)", category: .llm)
+        Log.info("  Generation time: \(String(format: "%.2f", generationTime))s", category: .performance)
+        Log.debug("  Tokens: \(llmResponse.tokensGenerated)", category: .llm)
+        Log.debug("  Speed: \(String(format: "%.1f", llmResponse.tokensPerSecond ?? 0)) tokens/sec", category: .performance)
+        
+        let metadata = ResponseMetadata(
+            timeToFirstToken: llmResponse.timeToFirstToken,
+            totalGenerationTime: llmResponse.totalTime,
+            tokensGenerated: llmResponse.tokensGenerated,
+            tokensPerSecond: llmResponse.tokensPerSecond,
+            modelUsed: llmResponse.modelName ?? llmService.modelName,
+            retrievalTime: retrievalTime
+        )
+        
+        var warnings: [String] = []
+        if let note = fallbackNote { warnings.append(note) }
+        
+        let response = RAGResponse(
+            queryId: ragQuery.id,
+            retrievedChunks: [],
+            generatedResponse: llmResponse.text,
+            metadata: metadata,
+            confidenceScore: 1.0,
+            qualityWarnings: warnings
+        )
+        
+        let totalTime = Date().timeIntervalSince(pipelineStartTime)
+        Log.info("✅ [RAGService] Direct chat complete in \(String(format: "%.2f", totalTime))s", category: .pipeline)
+        TelemetryCenter.emit(
+            .system,
+            title: "Query complete",
+            metadata: [
+                "duration": String(format: "%.2f", totalTime),
+                "mode": "direct"
+            ],
+            duration: totalTime
+        )
+        
+        return response
     }
     
     // MARK: - Model Management
@@ -560,20 +1205,9 @@ class RAGService: ObservableObject {
     
     // MARK: - Private Helpers
     
-    /// Format retrieved chunks into a context string for the LLM
-    private func formatContext(_ chunks: [RetrievedChunk]) -> String {
-        guard !chunks.isEmpty else { return "" }
-        
-        return chunks.enumerated().map { index, retrieved in
-            """
-            [Document Chunk \(index + 1), Similarity: \(String(format: "%.3f", retrieved.similarityScore))]
-            \(retrieved.chunk.content)
-            """
-        }.joined(separator: "\n\n---\n\n")
-    }
     
     /// Print query statistics for debugging
-    private func printQueryStats(query: String, response: RAGResponse) {
+    nonisolated private func printQueryStats(query: String, response: RAGResponse) {
         print("\n📊 RAG Query Statistics:")
         print("  Query: \(query.prefix(50))...")
         print("  Retrieved chunks: \(response.retrievedChunks.count)")
@@ -588,6 +1222,75 @@ class RAGService: ObservableObject {
         print("  Model: \(response.metadata.modelUsed)")
         print("  Total time: \(String(format: "%.2f", response.metadata.retrievalTime + response.metadata.totalGenerationTime))s\n")
     }
+    
+    // MARK: - Response Quality Assessment
+    
+    /// Calculate confidence score and identify quality warnings
+    /// Critical for medical/high-stakes information retrieval
+    /// - Parameters:
+    ///   - chunks: Retrieved chunks for this response
+    ///   - query: Original user query
+    /// - Returns: Tuple of (confidence score 0-1, array of warnings)
+    @MainActor
+    private func assessResponseQuality(
+        chunks: [RetrievedChunk],
+        query: String
+    ) -> (Float, [String]) {
+        var warnings: [String] = []
+        
+        // Factor 1: Semantic similarity of top chunks
+        let topSimilarity = chunks.first?.similarityScore ?? 0
+        
+        if topSimilarity < 0.4 {
+            warnings.append("Low relevance: Best match only \(String(format: "%.1f", topSimilarity * 100))% similar")
+        } else if topSimilarity < 0.6 {
+            warnings.append("Moderate relevance: Consider rephrasing query for better results")
+        }
+        
+        // Factor 2: Number of supporting chunks
+        let chunkCount = chunks.count
+        if chunkCount < 3 {
+            warnings.append("Limited context: Only \(chunkCount) relevant chunks found")
+        }
+        
+        // Factor 3: Source diversity (multiple documents = higher confidence)
+        let uniqueSources = Set(chunks.map { $0.sourceDocument })
+        let sourceCount = uniqueSources.count
+        
+        if sourceCount == 1 && documents.count > 1 {
+            warnings.append("Single source: Information from only one document")
+        }
+        
+        // Factor 4: Query quality
+        let queryWords = query.split(separator: " ").count
+        if queryWords <= 2 {
+            warnings.append("Generic query: Try more specific questions for better accuracy")
+        }
+        
+        // Calculate aggregate confidence (weighted average)
+        let similarityWeight: Float = 0.5
+        let chunkCountWeight: Float = 0.2
+        let sourceDiversityWeight: Float = 0.2
+        let queryQualityWeight: Float = 0.1
+        
+        let similarityScore = min(topSimilarity / 0.8, 1.0)  // Normalize: 0.8+ = full confidence
+        let chunkScore = min(Float(chunkCount) / 5.0, 1.0)  // 5+ chunks = full confidence
+        let diversityScore = min(Float(sourceCount) / Float(max(documents.count, 1)), 1.0)
+        let queryScore = min(Float(queryWords) / 5.0, 1.0)  // 5+ words = full confidence
+        
+        let confidence = (
+            similarityScore * similarityWeight +
+            chunkScore * chunkCountWeight +
+            diversityScore * sourceDiversityWeight +
+            queryScore * queryQualityWeight
+        )
+        
+        return (confidence, warnings)
+    }
+    
+    // MARK: - MMR (Maximal Marginal Relevance) for Diversity
+    
+    
 }
 
 // MARK: - Device Capability Detection
@@ -595,6 +1298,7 @@ class RAGService: ObservableObject {
 extension RAGService {
     
     /// Comprehensive device capability detection for Apple Intelligence ecosystem
+    @MainActor
     static func checkDeviceCapabilities() -> DeviceCapabilities {
         var capabilities = DeviceCapabilities()
         
@@ -614,31 +1318,94 @@ extension RAGService {
         if #available(iOS 26.0, *) {
             // iOS 26+ with Foundation Models
             #if targetEnvironment(simulator)
+            // Simulator: Foundation Models not available
             capabilities.supportsFoundationModels = false
             capabilities.foundationModelUnavailableReason = "Foundation Models not available in Simulator"
             capabilities.supportsAppleIntelligence = false
             capabilities.appleIntelligenceUnavailableReason = "Not available in Simulator"
+            print("ℹ️  Running in Simulator - Foundation Models unavailable")
             #else
-            // Check hardware capability only - don't actually instantiate SystemLanguageModel
-            // (accessing SystemLanguageModel.default can crash if Apple Intelligence not enabled)
-            if capabilities.deviceChip.supportsAppleIntelligence {
-                // Device has capable hardware (A17 Pro+/M-series) and iOS 26+
-                // Assume Foundation Models are potentially available
-                // Actual availability will be checked when AppleFoundationLLMService is used
+            // Real device: Check Foundation Models availability
+            // SystemLanguageModel.default must be accessed synchronously on main thread
+            guard Thread.isMainThread else {
+                // Fallback: not on main thread
+                capabilities.supportsFoundationModels = false
+                capabilities.foundationModelUnavailableReason = "Internal error: not called from main thread"
+                capabilities.supportsAppleIntelligence = false
+                capabilities.appleIntelligenceUnavailableReason = "Internal error: not called from main thread"
+                print("❌ checkDeviceCapabilities() not called from main thread")
+                
+                // Skip Foundation Models check, continue with rest
+                capabilities.supportsPrivateCloudCompute = false
+                capabilities.supportsWritingTools = false
+                capabilities.supportsImagePlayground = false
+                
+                // Jump to post-Foundation Models setup
+                if hasAppleIntelligenceOS {
+                    capabilities.supportsAppleIntelligence = capabilities.deviceChip.supportsAppleIntelligence
+                    capabilities.supportsPrivateCloudCompute = true
+                    capabilities.supportsWritingTools = true
+                    capabilities.supportsImagePlayground = capabilities.deviceChip.supportsAppleIntelligence
+                    if !capabilities.supportsAppleIntelligence {
+                        capabilities.appleIntelligenceUnavailableReason = "Requires A17 Pro+ or M-series"
+                    }
+                }
+                
+                // Skip to embedding check
+                capabilities.supportsEmbeddings = true
+                capabilities.supportsCoreML = true
+                capabilities.supportsAppIntents = true
+                capabilities.supportsVision = true
+                capabilities.supportsVisionKit = true
+                capabilities.deviceTier = determineDeviceTier(
+                    chip: capabilities.deviceChip,
+                    hasAppleIntelligence: capabilities.supportsAppleIntelligence,
+                    hasEmbeddings: capabilities.supportsEmbeddings
+                )
+                return capabilities
+            }
+            
+            let systemModel = SystemLanguageModel.default
+            
+            switch systemModel.availability {
+            case .available:
                 capabilities.supportsFoundationModels = true
                 capabilities.foundationModelUnavailableReason = nil
                 capabilities.supportsAppleIntelligence = true
                 capabilities.appleIntelligenceUnavailableReason = nil
+                print("✅ Foundation Models available on device")
                 
-                print("📱 Hardware supports Foundation Models (A18 Pro/A17 Pro+/M-series detected)")
-                print("   ℹ️  Actual model availability will be verified when used")
-                print("   💡 If not working, check Settings > Apple Intelligence & Siri")
-            } else {
-                // Device doesn't have capable hardware
+            case .unavailable(let reason):
                 capabilities.supportsFoundationModels = false
-                capabilities.foundationModelUnavailableReason = "Requires A17 Pro+ or M-series chip"
                 capabilities.supportsAppleIntelligence = false
-                capabilities.appleIntelligenceUnavailableReason = "Requires A17 Pro+ or M-series chip"
+                
+                switch reason {
+                case .deviceNotEligible:
+                    let message = "Device not eligible (requires A17 Pro+ or M-series)"
+                    capabilities.foundationModelUnavailableReason = message
+                    capabilities.appleIntelligenceUnavailableReason = message
+                    print("❌ Device not eligible for Foundation Models")
+                    
+                case .appleIntelligenceNotEnabled:
+                    let message = "Apple Intelligence not enabled - go to Settings > Apple Intelligence & Siri"
+                    capabilities.foundationModelUnavailableReason = message
+                    capabilities.appleIntelligenceUnavailableReason = message
+                    print("⚠️  Apple Intelligence not enabled in Settings")
+                    print("   💡 Go to Settings > Apple Intelligence & Siri to enable")
+                    
+                case .modelNotReady:
+                    let message = "Model downloading or initializing - check iPhone Storage"
+                    capabilities.foundationModelUnavailableReason = message
+                    capabilities.appleIntelligenceUnavailableReason = message
+                    print("⏳ Foundation Models not ready (downloading or initializing)")
+                    print("   💡 Check Settings > General > iPhone Storage for download progress")
+                    
+                @unknown default:
+                    let message = "Foundation Models unavailable (unknown reason)"
+                    capabilities.foundationModelUnavailableReason = message
+                    capabilities.appleIntelligenceUnavailableReason = message
+                    print("❌ Foundation Models unavailable (unknown reason)")
+                }
             }
             #endif
             
@@ -732,35 +1499,50 @@ extension RAGService {
         let identifier = modelCode ?? "unknown"
         
         // iPhone identifiers
-        if identifier.contains("iPhone") {
-            // Extract iPhone model number
-            if identifier.contains("iPhone16") || identifier.contains("iPhone17") {
-                // iPhone 16 Pro/Max (A18 Pro), iPhone 15 Pro/Max (A17 Pro), or newer
-                return .a17ProOrNewer
-            } else if identifier.contains("iPhone15") {
-                // iPhone 14 Pro (A16)
-                return .a16Bionic
-            } else if identifier.contains("iPhone14") {
-                // iPhone 13 Pro (A15)
+        if identifier.hasPrefix("iPhone") {
+            let components = identifier.split(separator: ",")
+            let family = components.first.map(String.init) ?? "iPhone"
+            let variant = components.count > 1 ? String(components[1]) : ""
+            switch family {
+            case "iPhone17":
+                // iPhone 16 line (2024) – Pro models run A18 Pro, non-Pro run A18
+                if ["1", "2"].contains(variant) {
+                    return .a18Pro
+                } else {
+                    return .a18
+                }
+            case "iPhone16":
+                // iPhone 15 line (2023) – Pro models run A17 Pro, non-Pro run A16
+                if ["1", "2"].contains(variant) {
+                    return .a17Pro
+                } else {
+                    return .a16Bionic
+                }
+            case "iPhone15":
+                // iPhone 14 line (2022) – Pro models run A16, standard models run A15
+                if ["2", "3"].contains(variant) {
+                    return .a16Bionic
+                } else {
+                    return .a15Bionic
+                }
+            case "iPhone14":
                 return .a15Bionic
-            } else if identifier.contains("iPhone13") {
-                // iPhone 12 Pro (A14)
+            case "iPhone13":
                 return .a14Bionic
-            } else if identifier.contains("iPhone12") {
-                // iPhone 11 Pro (A13)
+            case "iPhone12":
                 return .a13Bionic
-            } else {
+            default:
                 return .older
             }
         }
         
         // iPad identifiers
-        if identifier.contains("iPad") {
-            if identifier.contains("iPad14") || identifier.contains("iPad15") || identifier.contains("iPad16") {
-                // iPad with M-series or A17+
+        if identifier.hasPrefix("iPad") {
+            if identifier.contains("iPad16") || identifier.contains("iPad17") {
                 return .mSeries
-            } else if identifier.contains("iPad13") {
-                // iPad with A15/A16
+            } else if identifier.contains("iPad15") {
+                return .a17Pro
+            } else if identifier.contains("iPad14") || identifier.contains("iPad13") {
                 return .a16Bionic
             } else {
                 return .a14Bionic
@@ -793,7 +1575,10 @@ extension RAGService {
 
 enum DeviceChip: String {
     case mSeries = "Apple Silicon (M1+)"
-    case a17ProOrNewer = "A17 Pro / A18"
+    case a18Pro = "A18 Pro"
+    case a18 = "A18"
+    case a17Pro = "A17 Pro"
+    case a17 = "A17"
     case a16Bionic = "A16 Bionic"
     case a15Bionic = "A15 Bionic"
     case a14Bionic = "A14 Bionic"
@@ -802,7 +1587,7 @@ enum DeviceChip: String {
     
     var supportsAppleIntelligence: Bool {
         switch self {
-        case .mSeries, .a17ProOrNewer:
+        case .mSeries, .a18Pro, .a18, .a17Pro:
             return true
         default:
             return false
@@ -818,8 +1603,14 @@ enum DeviceChip: String {
         switch self {
         case .mSeries:
             return "Exceptional"
-        case .a17ProOrNewer:
+        case .a18Pro:
+            return "Elite"
+        case .a18:
+            return "Very Good"
+        case .a17Pro:
             return "Excellent"
+        case .a17:
+            return "Very Good"
         case .a16Bionic:
             return "Very Good"
         case .a15Bionic, .a14Bionic:
@@ -828,6 +1619,31 @@ enum DeviceChip: String {
             return "Moderate"
         case .older:
             return "Limited"
+        }
+    }
+    
+    var neuralEnginePerformance: String {
+        switch self {
+        case .mSeries:
+            return "16-core, 15.8 TOPS"
+        case .a18Pro:
+            return "16-core, 45 TOPS"
+        case .a18:
+            return "16-core, 20 TOPS"
+        case .a17Pro:
+            return "16-core, 35 TOPS"
+        case .a17:
+            return "16-core, 18 TOPS"
+        case .a16Bionic:
+            return "16-core, 17 TOPS"
+        case .a15Bionic:
+            return "16-core, 15.8 TOPS"
+        case .a14Bionic:
+            return "16-core, 11 TOPS"
+        case .a13Bionic:
+            return "8-core, 6 TOPS"
+        case .older:
+            return "Not available"
         }
     }
 }
@@ -858,9 +1674,38 @@ struct DeviceCapabilities {
     var supportsAppIntents = false
     var supportsVision = false
     var supportsVisionKit = false
+    
+    // Hardware Features
+    var hasNeuralEngine: Bool {
+        return deviceChip.supportsNeuralEngine
+    }
 
     // Computed Properties
     var deviceTier: DeviceTier = .low
+
+    /// Estimated maximum context tokens Apple Intelligence can allocate on this hardware
+    /// - Returns ≈50K tokens once Foundation Models are active (PCC available)
+    /// - Returns ≈900 tokens for on-device-only execution while models download
+    var appleIntelligenceContextTokens: Int {
+        if supportsFoundationModels {
+            return 50_000 // ≈200K characters before prompt+response overhead
+        } else if supportsAppleIntelligence {
+            return 900 // ≈3.5K characters processed purely on-device
+        } else {
+            return 0
+        }
+    }
+
+    /// Human-readable summary of the Apple Intelligence context behaviour for this device
+    var appleIntelligenceContextDescription: String? {
+        if supportsFoundationModels {
+            return "≈3.5K characters on-device, automatically expanding to ≈200K characters (~50K tokens) via Private Cloud Compute when queries demand it."
+        } else if supportsAppleIntelligence {
+            return "≈3.5K characters (~900 tokens) handled fully on-device while Foundation Models finish downloading."
+        } else {
+            return nil
+        }
+    }
 
     var canRunRAG: Bool { supportsEmbeddings }
 
@@ -916,6 +1761,7 @@ enum RAGServiceError: LocalizedError {
     case noDocumentsAvailable
     case retrievalFailed
     case modelNotAvailable
+    case noRelevantContext
     
     var errorDescription: String? {
         switch self {
@@ -923,10 +1769,108 @@ enum RAGServiceError: LocalizedError {
             return "Query cannot be empty"
         case .noDocumentsAvailable:
             return "No documents have been added to the knowledge base"
+        case .noRelevantContext:
+            return "No relevant information found in documents. Try rephrasing your query."
         case .retrievalFailed:
             return "Failed to retrieve relevant chunks"
         case .modelNotAvailable:
             return "The selected LLM model is not available"
         }
+    }
+}
+
+// MARK: - RAGService Tool Handler Implementation
+// This enables agentic RAG where the LLM can decide when to search documents
+
+extension RAGService: RAGToolHandler {
+    
+    /// Search documents for relevant information
+    /// Called by the LLM when it needs information from the document library
+    func searchDocuments(query: String) async throws -> String {
+        print("🔧 [Tool Call] search_documents(query: \"\(query)\")")
+        
+        // Use the existing RAG pipeline to search
+        let queryEmbedding = try await embeddingService.generateEmbedding(for: query)
+        
+        let retrievedChunks = try await vectorDatabase.search(
+            embedding: queryEmbedding,
+            topK: 3  // Return top 3 chunks for tool call
+        )
+        
+        if retrievedChunks.isEmpty {
+            return "No relevant information found for: \(query)"
+        }
+        
+        // Format retrieved chunks for LLM consumption
+        var result = "Found \(retrievedChunks.count) relevant chunks:\n\n"
+        
+        for (index, retrieved) in retrievedChunks.enumerated() {
+            let docName = await getDocumentName(for: retrieved.chunk.documentId)
+            result += "[\(index + 1)] From \(docName)"
+            if let page = retrieved.chunk.metadata.pageNumber {
+                result += " (Page \(page))"
+            }
+            result += " (Relevance: \(String(format: "%.1f%%", retrieved.similarityScore * 100))):\n"
+            let fullText = retrieved.chunk.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let preview = fullText.count > 600 ? String(fullText.prefix(600)) + " [...]" : fullText
+            result += preview  // Truncated preview to control token usage
+            result += "\n\n"
+        }
+        
+        print("✅ [Tool Call] Returned \(retrievedChunks.count) chunks")
+        return result
+    }
+    
+    /// List all available documents
+    /// Called by the LLM when user asks what documents are available
+    func listDocuments() async throws -> String {
+        print("🔧 [Tool Call] list_documents()")
+        
+        if documents.isEmpty {
+            return "No documents available in the library."
+        }
+        
+        var result = "Available documents (\(documents.count)):\n\n"
+        
+        for (index, doc) in documents.enumerated() {
+            result += "\(index + 1). \(doc.filename)\n"
+            if let pages = doc.processingMetadata?.pagesProcessed {
+                result += "   - Pages: \(pages)\n"
+            }
+            result += "   - Chunks: \(doc.totalChunks)\n"
+            result += "   - Added: \(formatDate(doc.addedAt))\n"
+            result += "\n"
+        }
+        
+        print("✅ [Tool Call] Listed \(documents.count) documents")
+        return result
+    }
+    
+    /// Get summary of a specific document
+    /// Called by the LLM when user asks about a specific document
+    func getDocumentSummary(documentName: String) async throws -> String {
+        print("🔧 [Tool Call] get_document_summary(documentName: \"\(documentName)\")")
+        
+        guard let doc = documents.first(where: { $0.filename.lowercased().contains(documentName.lowercased()) }) else {
+            return "Document not found: \(documentName)"
+        }
+        
+        var result = "Document: \(doc.filename)\n"
+        if let pages = doc.processingMetadata?.pagesProcessed {
+            result += "- Pages: \(pages)\n"
+        }
+        result += "- Chunks: \(doc.totalChunks)\n"
+        result += "- Added: \(formatDate(doc.addedAt))\n"
+        result += "- File Type: \(doc.contentType.rawValue)"
+        
+        print("✅ [Tool Call] Returned summary for \(doc.filename)")
+        return result
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }

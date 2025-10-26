@@ -1,0 +1,42 @@
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcodeproj/xcshareddata/
+*.playground
+build/
+DerivedData/
+*.swiftpm/
+.build/
+
+# Documentation JSON dumps (too large for git)
+Docs/*/raw/*.json
+Docs/*/essentials/*.json
+
+# Environment variables
+.env
+.env.local
+.envrc
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+TestDocuments/
+.coverage

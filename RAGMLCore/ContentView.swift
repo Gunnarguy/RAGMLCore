@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var selectedTab: Tab = .chat
     
     enum Tab {
-        case chat, documents, tests, models, settings
+        case chat, documents, visualizations, models, settings
     }
     
     var body: some View {
@@ -36,13 +36,14 @@ struct ContentView: View {
             .tag(Tab.documents)
             
             NavigationView {
-                CoreValidationView(ragService: ragService)
+                VisualizationsView()
+                    .environmentObject(ragService)
             }
             .navigationViewStyle(.stack)
             .tabItem {
-                Label("Tests", systemImage: "checkmark.circle")
+                Label("Visualizations", systemImage: "chart.xyaxis.line")
             }
-            .tag(Tab.tests)
+            .tag(Tab.visualizations)
             
             NavigationView {
                 ModelManagerView(ragService: ragService)

@@ -16,6 +16,8 @@ struct LLMModel: Identifiable, Codable {
     let parameterCount: String
     let quantization: String?
     let contextLength: Int
+    let contextDescription: String?
+    let availabilityNote: String?
     let isAvailable: Bool
     
     init(id: UUID = UUID(), 
@@ -25,6 +27,8 @@ struct LLMModel: Identifiable, Codable {
          parameterCount: String,
          quantization: String? = nil,
          contextLength: Int,
+         contextDescription: String? = nil,
+         availabilityNote: String? = nil,
          isAvailable: Bool) {
         self.id = id
         self.name = name
@@ -33,12 +37,17 @@ struct LLMModel: Identifiable, Codable {
         self.parameterCount = parameterCount
         self.quantization = quantization
         self.contextLength = contextLength
+        self.contextDescription = contextDescription
+        self.availabilityNote = availabilityNote
         self.isAvailable = isAvailable
     }
 }
 
 enum ModelType: String, Codable {
     case appleFoundation = "Apple Foundation"
+    case appleHybrid = "Apple Intelligence (Hybrid)"
+    case openAI = "OpenAI (Cloud)"
+    case onDeviceAnalysis = "On-Device Analysis"
     case coreMLPackage = "Core ML Package"
     case gguf = "GGUF"
 }
@@ -58,9 +67,51 @@ struct InferenceConfig {
     var topK: Int = 40
     var useKVCache: Bool = true
     
+    // ✅ GAP #3 FIXED: Advanced Generation Parameters (iOS 26+)
+    // These parameters improve response quality and reduce repetition
+    var frequencyPenalty: Float = 0.0   // 0.0-2.0: Reduce word repetition
+    var presencePenalty: Float = 0.0    // 0.0-2.0: Encourage topic diversity
+    var repetitionPenalty: Float = 1.0  // 1.0-2.0: Stronger anti-repeat (1.0 = off)
+    var stopSequences: [String] = []    // Stop generation at these strings
+    
     // Apple Intelligence Execution Context (iOS 26+)
     var executionContext: ExecutionContext = .automatic
     var allowPrivateCloudCompute: Bool = true  // User-controlled PCC permission
+    
+    /// Preset for RAG queries (factual, non-repetitive, focused)
+    static var ragOptimized: InferenceConfig {
+        var config = InferenceConfig()
+        config.temperature = 0.7        // Balanced creativity
+        config.topP = 0.9              // Focused nucleus sampling
+        config.topK = 40               // Limited vocabulary
+        config.frequencyPenalty = 0.5  // Reduce repetition
+        config.presencePenalty = 0.3   // Cover multiple document sections
+        config.repetitionPenalty = 1.2 // Stronger anti-repeat
+        config.stopSequences = ["</answer>", "\n\nQuestion:", "[END]"]
+        return config
+    }
+    
+    /// Preset for creative responses (more diverse, less constrained)
+    static var creative: InferenceConfig {
+        var config = InferenceConfig()
+        config.temperature = 1.0
+        config.topP = 0.95
+        config.topK = 60
+        config.frequencyPenalty = 0.3
+        config.presencePenalty = 0.5
+        return config
+    }
+    
+    /// Preset for precise, deterministic responses
+    static var precise: InferenceConfig {
+        var config = InferenceConfig()
+        config.temperature = 0.3
+        config.topP = 0.85
+        config.topK = 30
+        config.frequencyPenalty = 0.7
+        config.repetitionPenalty = 1.3
+        return config
+    }
 }
 
 /// Defines where Apple Foundation Models should execute

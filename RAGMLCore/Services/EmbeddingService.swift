@@ -85,14 +85,16 @@ class EmbeddingService {
             print("⚠️  [EmbeddingService] Low coverage: \(wordsProcessed)/\(words.count) words have embeddings")
         }
         
-        guard !wordVectors.isEmpty else {
-            print("❌ [EmbeddingService] No vectors returned for any words")
-            print("   💡 Try using more common words or longer phrases")
-            throw EmbeddingError.noVectorsReturned
+        // If no word vectors found, use fallback strategy
+        let chunkEmbedding: [Float]
+        if wordVectors.isEmpty {
+            print("⚠️  [EmbeddingService] No vectors returned - using fallback embedding")
+            print("   💡 Text: \"\(trimmedText.prefix(50))...\"")
+            chunkEmbedding = createFallbackEmbedding(for: trimmedText)
+        } else {
+            // Average all word embeddings to get a single chunk-level embedding
+            chunkEmbedding = self.averageEmbeddings(wordVectors)
         }
-        
-        // Average all word embeddings to get a single chunk-level embedding
-        let chunkEmbedding = self.averageEmbeddings(wordVectors)
         
         // Validate embedding quality
         try validateEmbedding(chunkEmbedding)
@@ -183,6 +185,49 @@ class EmbeddingService {
         
         // Convert to Float for efficient storage
         return averaged.map { Float($0) }
+    }
+    
+    /// Create a fallback embedding for text with no word vectors
+    /// Uses character-level and structural features to create a synthetic embedding
+    private func createFallbackEmbedding(for text: String) -> [Float] {
+        var embedding = Array(repeating: Float(0.0), count: embeddingDimension)
+        
+        // Use a simple hash-based approach to create a deterministic embedding
+        // This ensures the same text always gets the same embedding
+        let normalized = text.lowercased()
+        
+        // Populate embedding with character frequency features (first 256 dimensions)
+        for (index, char) in normalized.unicodeScalars.prefix(256).enumerated() {
+            if index < embeddingDimension {
+                // Use Unicode value normalized to [-1, 1] range
+                embedding[index] = Float(char.value % 256) / 128.0 - 1.0
+            }
+        }
+        
+        // Add text length feature (dimension 256-260)
+        if embeddingDimension > 256 {
+            embedding[256] = Float(min(text.count, 1000)) / 1000.0
+        }
+        
+        // Add word count feature (dimension 261-265)
+        if embeddingDimension > 261 {
+            let wordCount = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+            embedding[261] = Float(min(wordCount, 100)) / 100.0
+        }
+        
+        // Add numeric content indicator (dimension 266-270)
+        if embeddingDimension > 266 {
+            let hasNumbers = text.rangeOfCharacter(from: .decimalDigits) != nil
+            embedding[266] = hasNumbers ? 1.0 : -1.0
+        }
+        
+        // Normalize to unit length (standard for embeddings)
+        let magnitude = sqrt(embedding.map { $0 * $0 }.reduce(0, +))
+        if magnitude > 0 {
+            embedding = embedding.map { $0 / magnitude }
+        }
+        
+        return embedding
     }
     
     /// Calculate cosine similarity between two embedding vectors

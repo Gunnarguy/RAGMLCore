@@ -8,7 +8,7 @@
 import Foundation
 
 /// Represents a user query in the RAG pipeline
-struct RAGQuery {
+struct RAGQuery: Sendable {
     let id: UUID
     let query: String
     let timestamp: Date
@@ -23,31 +23,51 @@ struct RAGQuery {
 }
 
 /// Result of a RAG query including retrieved context and generated response
-struct RAGResponse {
+struct RAGResponse: Sendable {
     let id: UUID
     let queryId: UUID
     let retrievedChunks: [RetrievedChunk]
     let generatedResponse: String
     let metadata: ResponseMetadata
+    let confidenceScore: Float  // 0.0-1.0 aggregate confidence
+    let qualityWarnings: [String]  // Warnings about result quality
     
-    init(id: UUID = UUID(), queryId: UUID, retrievedChunks: [RetrievedChunk], generatedResponse: String, metadata: ResponseMetadata) {
+    init(id: UUID = UUID(), 
+         queryId: UUID, 
+         retrievedChunks: [RetrievedChunk], 
+         generatedResponse: String, 
+         metadata: ResponseMetadata,
+         confidenceScore: Float = 1.0,
+         qualityWarnings: [String] = []) {
         self.id = id
         self.queryId = queryId
         self.retrievedChunks = retrievedChunks
         self.generatedResponse = generatedResponse
         self.metadata = metadata
+        self.confidenceScore = confidenceScore
+        self.qualityWarnings = qualityWarnings
     }
 }
 
 /// A document chunk retrieved for context with its similarity score
-struct RetrievedChunk {
+struct RetrievedChunk: Sendable {
     let chunk: DocumentChunk
     let similarityScore: Float
     let rank: Int
+    let sourceDocument: String  // Filename for citation
+    let pageNumber: Int?  // Page number if available
+    
+    nonisolated init(chunk: DocumentChunk, similarityScore: Float, rank: Int, sourceDocument: String = "", pageNumber: Int? = nil) {
+        self.chunk = chunk
+        self.similarityScore = similarityScore
+        self.rank = rank
+        self.sourceDocument = sourceDocument
+        self.pageNumber = pageNumber
+    }
 }
 
 /// Performance and execution metadata for a RAG response
-struct ResponseMetadata {
+struct ResponseMetadata: Sendable {
     let timeToFirstToken: TimeInterval?
     let totalGenerationTime: TimeInterval
     let tokensGenerated: Int
