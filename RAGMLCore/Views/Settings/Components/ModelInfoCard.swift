@@ -62,6 +62,10 @@ struct ModelInfoCard: View {
             return Image(systemName: "doc.text.magnifyingglass")
         case .openAIDirect:
             return Image(systemName: "key.fill")
+        case .mlxLocal:
+            return Image(systemName: "server.rack")
+        case .coreMLLocal:
+            return Image(systemName: "cpu")
         }
     }
 
@@ -98,6 +102,15 @@ struct ModelInfoCard: View {
             return true
         case .openAIDirect:
             return true
+        case .mlxLocal:
+            #if os(macOS)
+            return true
+            #else
+            return false
+            #endif
+        case .coreMLLocal:
+            // Core ML is available on Apple platforms; actual usability depends on configured model
+            return true
         }
     }
 
@@ -116,6 +129,15 @@ struct ModelInfoCard: View {
         case .onDeviceAnalysis:
             return nil
         case .openAIDirect:
+            return nil
+        case .mlxLocal:
+            #if os(macOS)
+            return nil
+            #else
+            return "Available on macOS only"
+            #endif
+        case .coreMLLocal:
+            // Could reflect model configuration status in future
             return nil
         }
     }
@@ -162,6 +184,20 @@ struct ModelInfoCard: View {
                 "Pay-as-you-go pricing",
                 "Full control over usage",
                 "Up to 400K context window"
+            ]
+        case .mlxLocal:
+            return [
+                "Local MLX server on macOS",
+                "OpenAI-compatible HTTP endpoint",
+                "No data leaves device",
+                "Works with popular open models"
+            ]
+        case .coreMLLocal:
+            return [
+                "Custom Core ML LLM (.mlpackage)",
+                "Runs fully on-device",
+                "No network required",
+                "Requires a compatible converted model"
             ]
         }
     }

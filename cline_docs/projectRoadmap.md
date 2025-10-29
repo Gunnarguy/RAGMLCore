@@ -1,0 +1,78 @@
+## Project Roadmap – RAGMLCore AI Modernization (Apple 2025 + MLX)
+
+Last updated: 2025-10-28
+
+## Vision
+Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
+- Prioritizes on‑device intelligence (Apple Foundation Models, WritingTools)
+- Seamlessly falls back to Private Cloud Compute when beneficial
+- Offers local open models via MLX on macOS
+- Supports custom Core ML models for enterprises
+- Provides transparent telemetry and capability diagnostics
+
+## High-level Goals
+- Apple Intelligence-first UX (on-device by default; PCC with zero-retention)
+- Pluggable model backends (Apple FM, ChatGPT Extension, OpenAI, MLX Local, Core ML Local, On-Device Analysis)
+- Robust, on-device embeddings with provider abstraction (NLEmbedding + Core ML sentence encoders)
+- Strong privacy posture and clear execution-location surfacing (On‑Device vs PCC vs Cloud)
+- Great performance and responsiveness (background compute off main; warm-ups; caching)
+
+## Milestones and Tasks
+- [x] Backend abstraction for embeddings
+  - [x] Introduce EmbeddingProvider protocol
+  - [x] Implement NLEmbeddingProvider (512-dim word-avg parity)
+  - [x] Refactor EmbeddingService to delegate to provider
+  - [ ] Add Core ML sentence encoder provider (implement tokenization/IO)
+  - [ ] Add index namespacing + re-embed workflow for dimension changes
+- [x] LLM backends and Settings wiring
+  - [x] Extend LLMModelType with mlxLocal and coreMLLocal
+  - [x] Add MLXLocalLLMService (macOS-only, local server bridge)
+  - [x] Wire new backends into SettingsView picker and pipeline stages
+  - [ ] CoreMLLLMService: complete tokenization/input-output mapping for one model
+  - [ ] Add tool-call accounting in AppleFoundationLLMService (agentic RAG metrics)
+- [ ] Writing and authoring features
+  - [ ] Integrate WritingTools into chat composer (rewrite/summarize/tone)
+  - [ ] Provide fallbacks when WritingTools unavailable
+- [ ] Speech and multimodal
+  - [ ] ASR with SFSpeechRecognizer for voice prompts
+  - [ ] TTS with AVSpeechSynthesizer for responses
+  - [ ] VisionKit document scanner + upgraded OCR (VNRecognizeTextRequest v3)
+- [ ] App Intents and shortcuts
+  - [ ] SummarizeClipboardIntent, AskAboutDocumentIntent, QuickAnswerIntent
+  - [ ] Polish ChatGPT Extension pathways when entitlements available
+- [ ] Telemetry, privacy, diagnostics
+  - [ ] TelemetryCenter: backendUsed, executionLocation, TTFT, tokens/sec, toolCallsMade
+  - [ ] Capability diagnostics surfaces “why unavailable” and actionable tips
+  - [ ] UI badge for execution location (📱 On‑Device / ☁️ PCC / 🔑 OpenAI / 🖥️ MLX)
+
+## Completion Criteria
+- End users can select among Apple Intelligence, MLX Local (macOS), Core ML Local, OpenAI Direct, and On‑Device Analysis
+- Apple FM execution hybrid behavior visible (TTFT-based detection + UI badges)
+- Embeddings provider switchable; Core ML sentence encoder option available
+- WritingTools available in composer; reasonable fallbacks when not present
+- Voice in/out supported; document scan and OCR ingestion work smoothly
+- Diagnostics explain unavailability with remediation suggestions
+- All processing clearly labeled for privacy: On‑Device vs PCC vs Cloud
+
+## Progress Tracker (Snapshot)
+- Embeddings: 3/5
+- LLM Backends: 3/5
+- Writing/Authoring: 0/2
+- Speech/Multimodal: 0/3
+- Intents: 0/2
+- Telemetry/Diagnostics: 0/3
+
+## Completed Tasks (History)
+- 2025-10-28
+  - Added EmbeddingProvider abstraction and NLEmbeddingProvider
+  - Refactored EmbeddingService to provider-based design
+  - Scaffolded CoreMLSentenceEmbeddingProvider (IO pending)
+  - Implemented MLXLocalLLMService (macOS-only, OpenAI-style bridge)
+  - Extended LLMModelType with mlxLocal/coreMLLocal; wired into SettingsView
+  - Expanded Settings pipeline stages to show MLX/Core ML status
+
+## Notes
+- Apple Foundation Models API requires iOS 26+ and eligible hardware; PCC is zero-retention
+- MLX Local runs only on macOS and is designed for private, on-machine inference
+- Core ML LLM path requires a known model signature and tokenizer
+- Index dimension changes require re-embed or namespacing to avoid cosine mismatch

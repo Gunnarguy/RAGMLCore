@@ -13,6 +13,8 @@ enum LLMModelType: String, CaseIterable {
     case chatGPTExtension = "chatgpt_extension"    // Apple Intelligence ChatGPT (iOS 18.1+)
     case onDeviceAnalysis = "on_device_analysis"   // Extractive QA, always available
     case openAIDirect = "openai"                   // User-provided OpenAI API key
+    case mlxLocal = "mlx_local"                    // macOS-only local MLX server
+    case coreMLLocal = "coreml_local"              // Custom Core ML model
 }
 
 extension LLMModelType {
@@ -27,6 +29,10 @@ extension LLMModelType {
             return "On-Device Analysis"
         case .openAIDirect:
             return "OpenAI Direct"
+        case .mlxLocal:
+            return "MLX Local"
+        case .coreMLLocal:
+            return "Core ML Local"
         }
     }
 
@@ -41,6 +47,10 @@ extension LLMModelType {
             return "doc.text.magnifyingglass"
         case .openAIDirect:
             return "key.fill"
+        case .mlxLocal:
+            return "server.rack"
+        case .coreMLLocal:
+            return "cpu"
         }
     }
 }

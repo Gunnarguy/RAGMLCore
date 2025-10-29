@@ -416,6 +416,32 @@ struct SettingsView: View {
             Image(systemName: "doc.text.magnifyingglass")
         }
         .tag(LLMModelType.onDeviceAnalysis)
+
+        // macOS-only local MLX backend
+        Label {
+            VStack(alignment: .leading) {
+                Text("MLX Local (macOS)")
+                Text("Connect to a local mlx-lm server")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } icon: {
+            Image(systemName: "server.rack")
+        }
+        .tag(LLMModelType.mlxLocal)
+
+        // Custom Core ML model backend
+        Label {
+            VStack(alignment: .leading) {
+                Text("Core ML Local")
+                Text("Run a converted .mlpackage on-device")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } icon: {
+            Image(systemName: "cpu")
+        }
+        .tag(LLMModelType.coreMLLocal)
     }
 
     // Pre-declare Binding to simplify Picker selection and reduce type-check work.
@@ -789,6 +815,10 @@ struct SettingsView: View {
             return "Extracts relevant sentences from your documents using NaturalLanguage framework. No AI model needed, works on all devices, 100% private."
         case .openAIDirect:
             return "Primary: OpenAI GPT models using your key. If the API is unavailable, we fall back to On-Device Analysis so the chat never goes silent."
+        case .mlxLocal:
+            return "Runs a local LLM via MLX on macOS. Start mlx_lm.server locally; no data leaves your machine."
+        case .coreMLLocal:
+            return "Runs a custom Core ML LLM (.mlpackage) fully on-device. Requires selecting a compatible model."
         }
     }
 
@@ -874,6 +904,10 @@ struct SettingsView: View {
                 stages.append(makeOnDeviceStage(role: role, isEnabled: preference.enabled))
             case .openAIDirect:
                 stages.append(makeOpenAIStage(role: role, isEnabled: preference.enabled))
+            case .mlxLocal:
+                stages.append(makeMLXStage(role: role, isEnabled: preference.enabled))
+            case .coreMLLocal:
+                stages.append(makeCoreMLStage(role: role, isEnabled: preference.enabled))
             }
         }
         pipelineStages = stages
@@ -921,6 +955,15 @@ struct SettingsView: View {
             let trimmedKey = openaiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedKey.isEmpty else { return nil }
             return OpenAILLMService(apiKey: trimmedKey, model: openaiModel)
+        case .mlxLocal:
+            #if os(macOS)
+            return MLXLocalLLMService()
+            #else
+            return nil
+            #endif
+        case .coreMLLocal:
+            // Requires user to select a Core ML model URL; not configured here yet.
+            return nil
         }
     }
 
@@ -1060,6 +1103,36 @@ struct SettingsView: View {
             status: .available,
             icon: "key.fill"
         )
+    }
+
+    private func makeMLXStage(role: ModelPipelineStage.Role, isEnabled: Bool) -> ModelPipelineStage {
+        #if os(macOS)
+        let name = "MLX Local"
+        let detail = "Local MLX server on macOS (no data leaves device)"
+        let isActive = ragService.llmService is MLXLocalLLMService
+        if isActive {
+            return ModelPipelineStage(name: name, role: role, detail: detail, status: .active, icon: "server.rack")
+        }
+        if !isEnabled {
+            return ModelPipelineStage(name: name, role: role, detail: detail, status: .disabled, icon: "server.rack")
+        }
+        return ModelPipelineStage(name: name, role: role, detail: detail, status: .requiresConfiguration(message: "Start mlx_lm.server locally"), icon: "server.rack")
+        #else
+        return ModelPipelineStage(name: "MLX Local", role: role, detail: "Local MLX server on macOS", status: .unavailable(reason: "macOS only"), icon: "server.rack")
+        #endif
+    }
+
+    private func makeCoreMLStage(role: ModelPipelineStage.Role, isEnabled: Bool) -> ModelPipelineStage {
+        let name = "Core ML Local"
+        let detail = "Custom Core ML LLM (.mlpackage) fully on-device"
+        let isActive = ragService.llmService is CoreMLLLMService
+        if isActive {
+            return ModelPipelineStage(name: name, role: role, detail: detail, status: .active, icon: "cpu")
+        }
+        if !isEnabled {
+            return ModelPipelineStage(name: name, role: role, detail: detail, status: .disabled, icon: "cpu")
+        }
+        return ModelPipelineStage(name: name, role: role, detail: detail, status: .requiresConfiguration(message: "Select a Core ML model to enable"), icon: "cpu")
     }
 }
 #Preview {

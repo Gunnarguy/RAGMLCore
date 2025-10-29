@@ -13,20 +13,16 @@ class EmbeddingService {
     
     // MARK: - Properties
     
-    private let embedding: NLEmbedding?
+    private let provider: EmbeddingProvider
     private let embeddingDimension: Int
     
     // MARK: - Initialization
     
-    init() {
-        // Initialize Apple's BERT-based contextual embedding model
-        self.embedding = NLEmbedding.wordEmbedding(for: .english)
-        
-        // Apple's model produces 512-dimensional embeddings
-        self.embeddingDimension = 512
-        
-        if embedding == nil {
-            print("⚠️ Warning: NLEmbedding not available on this device")
+    init(provider: EmbeddingProvider = NLEmbeddingProvider()) {
+        self.provider = provider
+        self.embeddingDimension = provider.dimension
+        if !provider.isAvailable {
+            print("⚠️ Warning: Embedding provider not available on this device")
         }
     }
     
@@ -34,97 +30,28 @@ class EmbeddingService {
     
     /// Check if embedding generation is available on this device
     var isAvailable: Bool {
-        return embedding != nil
+        return provider.isAvailable
     }
     
     /// Generate a semantic embedding for a text chunk
-    /// Returns a 512-dimensional vector representing the semantic meaning
+    /// Returns a vector representing the semantic meaning
     func generateEmbedding(for text: String) async throws -> [Float] {
-        guard let embedding = embedding else {
-            print("❌ [EmbeddingService] Model unavailable")
-            throw EmbeddingError.modelUnavailable
-        }
-        
-        // Edge case: Empty or whitespace-only text
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else {
-            print("❌ [EmbeddingService] Empty input text")
-            throw EmbeddingError.emptyInput
-        }
-        
-        // Edge case: Very long text (>10k words) - log warning
-        let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-        if words.count > 10000 {
-            print("⚠️  [EmbeddingService] Very long text (\(words.count) words) - may be slow")
-        }
-        
-        guard !words.isEmpty else {
-            print("❌ [EmbeddingService] No words after filtering")
-            throw EmbeddingError.emptyInput
-        }
-        
-        var wordVectors: [[Double]] = []
-        var wordsProcessed = 0
-        var wordsSkipped = 0
-        
-        for word in words {
-            // Try original word first, then lowercase
-            if let vector = embedding.vector(for: word) {
-                wordVectors.append(vector)
-                wordsProcessed += 1
-            } else if let vector = embedding.vector(for: word.lowercased()) {
-                wordVectors.append(vector)
-                wordsProcessed += 1
-            } else {
-                wordsSkipped += 1
-            }
-        }
-        
-        // Log coverage for debugging
-        if wordsSkipped > 0 && wordsSkipped > words.count / 2 {
-            print("⚠️  [EmbeddingService] Low coverage: \(wordsProcessed)/\(words.count) words have embeddings")
-        }
-        
-        // If no word vectors found, use fallback strategy
-        let chunkEmbedding: [Float]
-        if wordVectors.isEmpty {
-            print("⚠️  [EmbeddingService] No vectors returned - using fallback embedding")
-            print("   💡 Text: \"\(trimmedText.prefix(50))...\"")
-            chunkEmbedding = createFallbackEmbedding(for: trimmedText)
-        } else {
-            // Average all word embeddings to get a single chunk-level embedding
-            chunkEmbedding = self.averageEmbeddings(wordVectors)
-        }
-        
-        // Validate embedding quality
-        try validateEmbedding(chunkEmbedding)
-        
-        return chunkEmbedding
+        let vec = try await provider.embed(text: text)
+        try validateEmbedding(vec)
+        return vec
     }
     
     /// Generate embeddings for multiple text chunks in batch
     func generateEmbeddings(for texts: [String]) async throws -> [[Float]] {
-        print("🔢 [EmbeddingService] Generating embeddings for \(texts.count) chunks...")
+        print("🔢 [EmbeddingService] Generating embeddings for \(texts.count) chunks via provider...")
         let startTime = Date()
-        
-        var embeddings: [[Float]] = []
-        embeddings.reserveCapacity(texts.count)
-        
-        for (index, text) in texts.enumerated() {
-            let embedding = try await generateEmbedding(for: text)
-            embeddings.append(embedding)
-            
-            // Progress indicator for large batches
-            if (index + 1) % 50 == 0 {
-                print("   Progress: \(index + 1)/\(texts.count) embeddings generated")
-            }
-        }
-        
+        let embeddings = try await provider.embedBatch(texts: texts)
         let totalTime = Date().timeIntervalSince(startTime)
-        let avgTime = totalTime / Double(texts.count)
+        let avgTime = texts.isEmpty ? 0 : totalTime / Double(texts.count)
         print("✅ [EmbeddingService] Complete: \(texts.count) embeddings in \(String(format: "%.2f", totalTime))s")
-        print("   Average: \(String(format: "%.0f", avgTime * 1000))ms per embedding")
-        
+        if texts.count > 0 {
+            print("   Average: \(String(format: "%.0f", avgTime * 1000))ms per embedding")
+        }
         return embeddings
     }
     
@@ -268,6 +195,7 @@ enum EmbeddingError: LocalizedError {
     case invalidDimension(expected: Int, actual: Int)
     case containsNaN
     case containsInfinite
+    case notImplemented
     
     var errorDescription: String? {
         switch self {
@@ -285,6 +213,8 @@ enum EmbeddingError: LocalizedError {
             return "Embedding contains NaN values"
         case .containsInfinite:
             return "Embedding contains infinite values"
+        case .notImplemented:
+            return "This embedding functionality is not yet implemented"
         }
     }
 }
