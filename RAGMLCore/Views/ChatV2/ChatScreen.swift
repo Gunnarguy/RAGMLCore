@@ -276,9 +276,9 @@ struct MessageListEmptyContent: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    FeatureRow(icon: "brain.head.profile", title: "Semantic Search", description: "Context-aware retrieval from your documents.")
-                    FeatureRow(icon: "sparkles", title: "AI Generation", description: "Grounded answers with clear citations.")
-                    FeatureRow(icon: "lock.shield", title: "Privacy First", description: "On-Device or Private Cloud Compute.")
+                    ChatV2FeatureRow(icon: "brain.head.profile", title: "Semantic Search", description: "Context-aware retrieval from your documents.")
+                    ChatV2FeatureRow(icon: "sparkles", title: "AI Generation", description: "Grounded answers with clear citations.")
+                    ChatV2FeatureRow(icon: "lock.shield", title: "Privacy First", description: "On-Device or Private Cloud Compute.")
                 }
                 .padding(.horizontal, 32)
                 .padding(.top, 8)
@@ -291,7 +291,7 @@ struct MessageListEmptyContent: View {
     }
 }
 
-struct FeatureRow: View {
+struct ChatV2FeatureRow: View {
     let icon: String
     let title: String
     let description: String
