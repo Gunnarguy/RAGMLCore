@@ -24,28 +24,23 @@ struct MessageListView: View {
                             EmptyListPlaceholder()
                                 .id("empty")
                         } else {
-                            var lastDay: Date? = nil
-                            ForEach(Array(messages.enumerated()), id: \.1.id) { index, message in
-                                let isNewDay = isNewDayBoundary(prev: lastDay, current: message.timestamp)
+                            ForEach(messages.indices, id: \.self) { index in
+                                let message = messages[index]
+                                let isNewDay = index == 0 || !Calendar.current.isDate(messages[index - 1].timestamp, inSameDayAs: message.timestamp)
                                 if isNewDay {
                                     DayDivider(date: message.timestamp)
                                 }
                                 MessageRowView(message: message)
                                     .id(message.id)
-
-                                lastDay = message.timestamp
-
-                                if index == messages.count - 1 {
-                                    // Anchor to bottom
-                                    Color.clear.frame(height: 1).id("bottom-anchor")
-                                }
                             }
+                            // Anchor to bottom
+                            Color.clear.frame(height: 1).id("bottom-anchor")
                         }
                     }
                     .padding(.horizontal, DSSpacing.md)
                     .padding(.vertical, DSSpacing.md)
                 }
-                .onChange(of: messages.count) {
+                .onChange(of: messages.count) { _ in
                     if shouldAutoScroll {
                         withAnimation(DSAnimations.fastEase) {
                             proxy.scrollTo("bottom-anchor", anchor: .bottom)
