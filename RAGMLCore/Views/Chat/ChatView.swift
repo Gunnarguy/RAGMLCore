@@ -648,19 +648,6 @@ private extension ChatView {
 }
 #endif
 
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    let role: Role
-    let content: String
-    let timestamp = Date()
-    var metadata: ResponseMetadata?
-    var retrievedChunks: [RetrievedChunk]?
-    
-    enum Role {
-        case user
-        case assistant
-    }
-}
 
 struct MessageBubble: View {
     let message: ChatMessage

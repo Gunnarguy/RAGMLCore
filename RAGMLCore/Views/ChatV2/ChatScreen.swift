@@ -13,6 +13,7 @@ struct ChatScreen: View {
     @AppStorage("retrievalTopK") private var retrievalTopK: Int = 3
     @State private var showScrollToBottom: Bool = false
     @State private var messages: [ChatMessage] = []
+    @State private var streamingText: String = ""
     
     // Processing State
     @State private var isProcessing: Bool = false
@@ -29,7 +30,7 @@ struct ChatScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            ChatHeader()
+            ChatHeader(onNewChat: { newChat() }, onClearChat: { clearChat() })
 
             // Context / Status Bar
             ContextStatusBarView(
@@ -42,6 +43,32 @@ struct ChatScreen: View {
 
             // Message list
             MessageListView(messages: $messages)
+            
+            // Streaming row (verbose but clean)
+            if isProcessing && !streamingText.isEmpty {
+                HStack(alignment: .top, spacing: DSSpacing.xs) {
+                    AvatarView(kind: .assistant)
+                    VStack(alignment: .leading, spacing: DSSpacing.xs) {
+                        Text(streamingText)
+                            .font(DSTypography.body)
+                            .foregroundColor(DSColors.primaryText)
+                            .padding(.horizontal, DSSpacing.sm)
+                            .padding(.vertical, DSSpacing.sm)
+                            .background(DSColors.surface)
+                            .clipShape(RoundedRectangle(cornerRadius: DSCorners.bubble, style: .continuous))
+                            .bubbleShadow()
+                        TypingIndicator()
+                    }
+                    Spacer(minLength: 48)
+                }
+                .padding(.horizontal, DSSpacing.md)
+                .transition(.opacity.combined(with: .scale))
+            }
+            
+            // Live telemetry strip during generation
+            if isProcessing {
+                LiveTelemetryStatsView()
+            }
             
             // Stage indicator + execution badge
             StageProgressBar(stage: stage, execution: execution, ttft: ttft)
@@ -72,6 +99,20 @@ struct ChatScreen: View {
     }
     
     // MARK: - Send Message
+    private func newChat() {
+        messages.removeAll()
+        isProcessing = false
+        stage = .idle
+        execution = .unknown
+        ttft = nil
+        streamingText = ""
+    }
+    
+    private func clearChat() {
+        messages.removeAll()
+        streamingText = ""
+    }
+    
     private func sendMessage(_ text: String) {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
@@ -119,6 +160,17 @@ struct ChatScreen: View {
                 
                 let response = try await capturedService.query(capturedQuery, topK: capturedTopK, config: config)
                 
+                // Simulated streaming of the full response in chunks for a responsive UI
+                let responseText = response.generatedResponse
+                let chunkSize = 12
+                for i in stride(from: 0, to: responseText.count, by: chunkSize) {
+                    let start = responseText.index(responseText.startIndex, offsetBy: i)
+                    let end = responseText.index(responseText.startIndex, offsetBy: min(i + chunkSize, responseText.count))
+                    let chunk = String(responseText[start..<end])
+                    await MainActor.run { self.streamingText.append(chunk) }
+                    try? await Task.sleep(nanoseconds: 20_000_000) // 0.02s per chunk
+                }
+                
                 // Update execution badge based on TTFT heuristic
                 if let first = response.metadata.timeToFirstToken {
                     await MainActor.run {
@@ -144,6 +196,7 @@ struct ChatScreen: View {
                 await MainActor.run {
                     self.isProcessing = false
                     self.stage = .idle
+                    self.streamingText = ""
                 }
             } catch {
                 await MainActor.run {
@@ -158,6 +211,8 @@ struct ChatScreen: View {
 // MARK: - Header
 
 struct ChatHeader: View {
+    let onNewChat: () -> Void
+    let onClearChat: () -> Void
     var body: some View {
         HStack {
             HStack(spacing: 8) {
@@ -178,12 +233,12 @@ struct ChatHeader: View {
 
             Menu {
                 Button {
-                    // Placeholder action: New chat
+                    onNewChat()
                 } label: {
                     Label("New Chat", systemImage: "square.and.pencil")
                 }
                 Button(role: .destructive) {
-                    // Placeholder action: Clear chat
+                    onClearChat()
                 } label: {
                     Label("Clear Chat", systemImage: "trash")
                 }
