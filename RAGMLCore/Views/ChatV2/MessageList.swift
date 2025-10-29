@@ -90,6 +90,7 @@ struct MessageListView: View {
 
 struct MessageRowView: View {
     let message: ChatMessage
+    @State private var showDetails = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: DSSpacing.xs) {
@@ -104,6 +105,30 @@ struct MessageRowView: View {
 
                 // Meta row (timestamp; execution badge hook in later pass)
                 MessageMetaView(date: message.timestamp)
+
+                // Sources chips (assistant only)
+                if message.role == .assistant, let chunks = message.retrievedChunks, !chunks.isEmpty {
+                    SourceChipsView(chunks: chunks) {
+                        showDetails = true
+                    }
+                }
+            }
+            .sheet(isPresented: $showDetails) {
+                if let meta = message.metadata {
+                    ResponseDetailsView(
+                        metadata: meta,
+                        retrievedChunks: message.retrievedChunks ?? []
+                    )
+                } else {
+                    VStack(alignment: .leading, spacing: DSSpacing.md) {
+                        Text("Retrieved Sources")
+                            .font(DSTypography.title)
+                        Text("Details unavailable for this message.")
+                            .font(DSTypography.body)
+                            .foregroundColor(DSColors.secondaryText)
+                    }
+                    .padding()
+                }
             }
 
             if message.role == .user {

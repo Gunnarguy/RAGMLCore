@@ -3,10 +3,17 @@
 //  RAGMLCore
 //
 //  Lightweight markdown-to-text renderer with safe fallback
+//  Platform-safe (iOS + macOS) pasteboard and styling
 //  Created by Cline on 10/28/25.
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 public struct MarkdownText: View {
     public let text: String
@@ -63,6 +70,10 @@ public struct CodeBlockView: View {
                 Button {
                     #if canImport(UIKit)
                     UIPasteboard.general.string = code
+                    #elseif canImport(AppKit)
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(code, forType: .string)
                     #endif
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -76,7 +87,24 @@ public struct CodeBlockView: View {
             }
         }
         .padding(10)
-        .background(Color(UIColor.systemGray6))
+        .background(DSColors.surface)
         .cornerRadius(8)
     }
+}
+
+// MARK: - Preview
+
+#Preview {
+    VStack(alignment: .leading, spacing: 12) {
+        MarkdownText("This is **bold**, _italic_, and `inline code`.")
+        CodeBlockView(code: """
+        // Sample Swift code
+        import SwiftUI
+
+        struct Example: View {
+            var body: some View { Text("Hello") }
+        }
+        """)
+    }
+    .padding()
 }

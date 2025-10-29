@@ -13,6 +13,18 @@ struct ChatScreen: View {
     @AppStorage("retrievalTopK") private var retrievalTopK: Int = 3
     @State private var showScrollToBottom: Bool = false
     @State private var messages: [ChatMessage] = []
+    
+    // Processing State
+    @State private var isProcessing: Bool = false
+    @State private var stage: ChatProcessingStage = .idle
+    @State private var execution: ChatExecutionLocation = .unknown
+    @State private var ttft: TimeInterval?
+    
+    // Settings (synchronized with SettingsView via @AppStorage)
+    @AppStorage("llmTemperature") private var temperature: Double = 0.7
+    @AppStorage("llmMaxTokens") private var maxTokens: Int = 500
+    @AppStorage("allowPrivateCloudCompute") private var allowPrivateCloudCompute: Bool = true
+    @AppStorage("executionContextRaw") private var executionContextRaw: String = "automatic"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,14 +42,114 @@ struct ChatScreen: View {
 
             // Message list
             MessageListView(messages: $messages)
+            
+            // Stage indicator + execution badge
+            StageProgressBar(stage: stage, execution: execution, ttft: ttft)
 
             Divider()
 
-            // Composer placeholder (will be replaced by redesigned Composer)
-            ComposerStub()
+            // Composer (will evolve with Writing Tools and actions)
+            ChatComposer(
+                isProcessing: isProcessing,
+                onSend: sendMessage
+            )
         }
         .navigationTitle("Chat")
         .navigationBarTitleDisplayMode(.inline)
+    }
+    
+    // MARK: - Execution Context mapping
+    private var executionContext: ExecutionContext {
+        switch executionContextRaw {
+        case "automatic": return .automatic
+        case "onDeviceOnly": return .onDeviceOnly
+        case "preferCloud": return .preferCloud
+        case "cloudOnly": return .cloudOnly
+        default: return .automatic
+        }
+    }
+    
+    // MARK: - Send Message
+    private func sendMessage(_ text: String) {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        
+        // Append user message
+        let userMessage = ChatMessage(role: .user, content: query)
+        messages.append(userMessage)
+        
+        // Reset and start processing
+        isProcessing = true
+        stage = .embedding
+        execution = .unknown
+        ttft = nil
+        
+        // Capture values for async task
+        let capturedQuery = query
+        let capturedTopK = retrievalTopK
+        let capturedMaxTokens = maxTokens
+        let capturedTemperature = temperature
+        let capturedExecutionContext = executionContext
+        let capturedAllowPCC = allowPrivateCloudCompute
+        let capturedService = ragService
+        
+        Task(priority: .userInitiated) {
+            do {
+                // Stage 1: Embedding
+                await MainActor.run { self.stage = .embedding }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                
+                // Stage 2: Searching
+                await MainActor.run { self.stage = .searching }
+                
+                let config = InferenceConfig(
+                    maxTokens: capturedMaxTokens,
+                    temperature: Float(capturedTemperature),
+                    topP: 0.9,
+                    topK: 40,
+                    useKVCache: true,
+                    executionContext: capturedExecutionContext,
+                    allowPrivateCloudCompute: capturedAllowPCC
+                )
+                
+                // Stage 3: Generating
+                await MainActor.run { self.stage = .generating }
+                
+                let response = try await capturedService.query(capturedQuery, topK: capturedTopK, config: config)
+                
+                // Update execution badge based on TTFT heuristic
+                if let first = response.metadata.timeToFirstToken {
+                    await MainActor.run {
+                        self.ttft = first
+                        self.execution = first < 1.0 ? .onDevice : .privateCloudCompute
+                    }
+                }
+                
+                let assistant = ChatMessage(
+                    role: .assistant,
+                    content: response.generatedResponse,
+                    metadata: response.metadata,
+                    retrievedChunks: response.retrievedChunks
+                )
+                
+                await MainActor.run {
+                    self.messages.append(assistant)
+                    self.stage = .complete
+                }
+                
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                
+                await MainActor.run {
+                    self.isProcessing = false
+                    self.stage = .idle
+                }
+            } catch {
+                await MainActor.run {
+                    self.isProcessing = false
+                    self.stage = .idle
+                }
+            }
+        }
     }
 }
 
@@ -121,7 +233,7 @@ struct ContextStatusBarView: View {
     }
 }
 
-// MARK: - Message List Placeholder
+// MARK: - Optional Placeholder (not used, kept for reference)
 
 struct MessageListEmptyContent: View {
     var body: some View {
@@ -203,7 +315,7 @@ struct FeatureRow: View {
     }
 }
 
-// MARK: - Composer Placeholder
+// MARK: - Composer Placeholder (legacy stub, not used in flow)
 
 struct ComposerStub: View {
     @State private var text: String = ""

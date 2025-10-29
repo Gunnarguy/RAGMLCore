@@ -3,23 +3,48 @@
 //  RAGMLCore
 //
 //  Design System tokens and lightweight utilities for ChatV2
+//  Platform-safe (iOS + macOS)
 //  Created by Cline on 10/28/25.
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Colors (Semantic)
 
 public enum DSColors {
     // Surfaces
     public static var background: Color {
-        Color(UIColor.systemBackground)
+        #if canImport(UIKit)
+        return Color(UIColor.systemBackground)
+        #elseif canImport(AppKit)
+        return Color(NSColor.windowBackgroundColor)
+        #else
+        return Color(.sRGB, red: 1, green: 1, blue: 1, opacity: 1)
+        #endif
     }
     public static var surface: Color {
-        Color(UIColor.secondarySystemBackground)
+        #if canImport(UIKit)
+        return Color(UIColor.secondarySystemBackground)
+        #elseif canImport(AppKit)
+        return Color(NSColor.controlBackgroundColor)
+        #else
+        return Color(.sRGB, red: 0.95, green: 0.95, blue: 0.95, opacity: 1)
+        #endif
     }
     public static var surfaceElevated: Color {
-        Color(UIColor.tertiarySystemBackground)
+        #if canImport(UIKit)
+        return Color(UIColor.tertiarySystemBackground)
+        #elseif canImport(AppKit)
+        return Color(NSColor.underPageBackgroundColor)
+        #else
+        return Color(.sRGB, red: 0.92, green: 0.92, blue: 0.92, opacity: 1)
+        #endif
     }
 
     // Content
