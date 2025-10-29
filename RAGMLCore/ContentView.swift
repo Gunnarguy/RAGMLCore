@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var ragService = RAGService()
     @State private var selectedTab: Tab = .chat
+    @AppStorage("useNewChatUI") private var useNewChatUI: Bool = true
     
     enum Tab {
         case chat, documents, visualizations, models, settings
@@ -18,7 +19,11 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationView {
-                ChatView(ragService: ragService)
+                if useNewChatUI {
+                    ChatScreen(ragService: ragService)
+                } else {
+                    ChatView(ragService: ragService)
+                }
             }
             .navigationViewStyle(.stack)
             .tabItem {
