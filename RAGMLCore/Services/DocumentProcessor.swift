@@ -10,7 +10,12 @@ import PDFKit
 import UniformTypeIdentifiers
 import Vision
 import CoreImage
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// Service responsible for parsing documents and chunking them for embedding
 class DocumentProcessor {
@@ -434,8 +439,8 @@ class DocumentProcessor {
     /// Render a PDF page as an image for OCR processing
     private func renderPDFPageAsImage(page: PDFPage) -> CIImage? {
         let pageBounds = page.bounds(for: .mediaBox)
+        #if canImport(UIKit)
         let renderer = UIGraphicsImageRenderer(size: pageBounds.size)
-        
         let image = renderer.image { context in
             UIColor.white.set()
             context.fill(pageBounds)
@@ -443,8 +448,33 @@ class DocumentProcessor {
             context.cgContext.scaleBy(x: 1.0, y: -1.0)
             page.draw(with: .mediaBox, to: context.cgContext)
         }
-        
         return CIImage(image: image)
+        #elseif canImport(AppKit)
+        let size = CGSize(width: pageBounds.size.width, height: pageBounds.size.height)
+        guard size.width > 0 && size.height > 0 else { return nil }
+        
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.white.set()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: size.height)
+            ctx.scaleBy(x: 1.0, y: -1.0)
+            page.draw(with: .mediaBox, to: ctx)
+            ctx.restoreGState()
+        }
+        image.unlockFocus()
+        
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let cgImage = rep.cgImage else {
+            return nil
+        }
+        return CIImage(cgImage: cgImage)
+        #else
+        return nil
+        #endif
     }
     
     /// Extract text from RTF using native AttributedString

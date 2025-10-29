@@ -6,7 +6,9 @@
 //
 
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
 
 // MARK: - Apple Intelligence Framework Imports (iOS 18.1+)
 // These frameworks provide access to Apple's AI capabilities:
@@ -1184,19 +1186,20 @@ class AppleChatGPTExtensionService: LLMService {
         #else
         // For iOS 18.1-25.x, check device capabilities
         // Apple Intelligence requires A17 Pro or Apple Silicon
+        #if canImport(UIKit)
         let _ = UIDevice.current.model
         let systemVersion = (UIDevice.current.systemVersion as NSString).floatValue
         
         // Check minimum iOS version
         guard systemVersion >= 18.1 else { return false }
         
-        // On real devices, Apple Intelligence availability is determined by:
-        // 1. Hardware capability (A17 Pro+ / M1+)
-        // 2. User enabling it in Settings
-        // Since we can't directly check Settings, we assume if the device supports it,
-        // the user can enable it. The actual ChatGPT call will fail gracefully if not enabled.
-        
+        // On real devices, availability depends on hardware + Settings.
+        // We assume user can enable it; actual calls will fail gracefully if not enabled.
         return true // Assume available on iOS 18.1+ for now
+        #else
+        // UIKit not available (e.g., macOS target for this code path) -> not available
+        return false
+        #endif
         #endif
     }
     

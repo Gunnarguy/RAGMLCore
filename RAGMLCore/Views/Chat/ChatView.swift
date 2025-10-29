@@ -140,7 +140,7 @@ struct ChatView: View {
                                     .foregroundColor(.secondary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 8)
-                                    .background(Color(uiColor: .systemGray5))
+                                    .background(DSColors.surface)
                                     .cornerRadius(16)
                                 }
                                 .id("loadMore")
@@ -240,11 +240,14 @@ struct ChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(DSColors.background)
         }
         .navigationTitle("Chat")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
+        #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     // Writing Tools submenu
@@ -286,6 +289,49 @@ struct ChatView: View {
                     Image(systemName: "ellipsis.circle")
                 }
             }
+        #else
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    // Writing Tools submenu
+                    if writingToolsService.isAvailable {
+                        Menu {
+                            Button(action: { proofreadInput() }) {
+                                Label("Proofread Query", systemImage: "checkmark.circle")
+                            }
+                            .disabled(inputText.isEmpty || isProcessingWritingTools)
+                            
+                            Button(action: { rewriteInput() }) {
+                                Label("Rewrite Query", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(inputText.isEmpty || isProcessingWritingTools)
+                            
+                            Button(action: { makeConciseInput() }) {
+                                Label("Make Concise", systemImage: "text.badge.minus")
+                            }
+                            .disabled(inputText.isEmpty || isProcessingWritingTools)
+                        } label: {
+                            Label("Writing Tools", systemImage: "pencil.and.list.clipboard")
+                        }
+                        
+                        Divider()
+                    }
+                    
+                    Picker("Retrieved Chunks", selection: $retrievalTopK) {
+                        Text("3 chunks").tag(3)
+                        Text("5 chunks").tag(5)
+                        Text("10 chunks").tag(10)
+                    }
+                    
+                    Button(role: .destructive) {
+                        clearChat()
+                    } label: {
+                        Label("Clear Chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        #endif
         }
         .onAppear {
             // PERFORMANCE: Cleanup old messages on appear
@@ -378,7 +424,7 @@ struct ChatView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color(uiColor: .systemGray6))
+                    .fill(DSColors.surface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -660,7 +706,7 @@ struct MessageBubble: View {
                     detailsButton
                     
                     if showingDetails {
-                        ResponseDetailsView(
+                        ChatResponseDetailsView(
                             metadata: metadata,
                             retrievedChunks: message.retrievedChunks ?? []
                         )
@@ -685,7 +731,7 @@ struct MessageBubble: View {
                 endPoint: .bottomTrailing
             )
         } else {
-            Color(uiColor: .systemGray5)
+            DSColors.surface
         }
     }
     
@@ -707,7 +753,8 @@ struct MessageBubble: View {
     }
 }
 
-// Custom corner radius modifier
+#if canImport(UIKit)
+// Custom corner radius modifier (UIKit path with per-corner support)
 extension View {
     func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
         clipShape(RoundedCorner(radius: radius, corners: corners))
@@ -727,6 +774,33 @@ struct RoundedCorner: Shape {
         return Path(path.cgPath)
     }
 }
+#else
+// macOS fallback: provide a compatible UIRectCorner and uniform rounded rectangle
+struct UIRectCorner: OptionSet {
+    let rawValue: Int
+    static let topLeft     = UIRectCorner(rawValue: 1 << 0)
+    static let topRight    = UIRectCorner(rawValue: 1 << 1)
+    static let bottomLeft  = UIRectCorner(rawValue: 1 << 2)
+    static let bottomRight = UIRectCorner(rawValue: 1 << 3)
+    static let allCorners: UIRectCorner = [.topLeft, .topRight, .bottomLeft, .bottomRight]
+}
+
+extension View {
+    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
+        // Note: Per-corner rounding not natively supported here; using uniform rounding fallback
+        clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+    }
+}
+
+struct RoundedCorner: Shape {
+    var radius: CGFloat = .infinity
+    var corners: UIRectCorner = .allCorners
+    
+    func path(in rect: CGRect) -> Path {
+        RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: rect)
+    }
+}
+#endif
 
 struct ResponseDetailsView: View {
     let metadata: ResponseMetadata
@@ -889,7 +963,7 @@ struct ResponseDetailsView: View {
             .foregroundColor(.secondary)
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .systemGray6))
+            .background(DSColors.surface)
             .cornerRadius(8)
     }
     
@@ -1125,7 +1199,7 @@ struct StreamingResponseView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(Color(uiColor: .systemGray5))
+                .background(DSColors.surface)
                 .cornerRadius(20, corners: [.topLeft, .topRight, .bottomRight])
                 .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
             }

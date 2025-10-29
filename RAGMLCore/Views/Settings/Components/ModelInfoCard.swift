@@ -32,7 +32,7 @@ struct ModelInfoCard: View {
                             .foregroundColor(.green)
                         Text(feature)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(DSColors.secondaryText)
                     }
                 }
             }
@@ -48,7 +48,7 @@ struct ModelInfoCard: View {
             }
         }
         .padding()
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
+        .background(DSColors.surface)
         .cornerRadius(12)
     }
 

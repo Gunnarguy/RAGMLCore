@@ -19,9 +19,9 @@ struct ModelManagerView: View {
             // Premium gradient background
             LinearGradient(
                 colors: [
-                    Color(.systemGroupedBackground),
-                    Color(.systemGroupedBackground).opacity(0.95),
-                    Color(.systemBackground).opacity(0.85)
+                    DSColors.background,
+                    DSColors.surface.opacity(0.95),
+                    DSColors.background.opacity(0.85)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -53,7 +53,9 @@ struct ModelManagerView: View {
             }
         }
         .navigationTitle("RAG Intelligence")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
         .onAppear {
             DispatchQueue.main.async {
                 let caps = RAGService.checkDeviceCapabilities()
@@ -151,7 +153,7 @@ struct ModelManagerView: View {
                 }
                 .frame(height: 90)
             }
-            .background(Color(.secondarySystemGroupedBackground))
+            .background(DSColors.surface)
             .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 20, bottomTrailingRadius: 20))
         }
         .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 8)
@@ -284,7 +286,7 @@ struct ModelManagerView: View {
                         .font(.caption2.weight(.medium))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(Color(.tertiarySystemGroupedBackground))
+                        .background(DSColors.surface)
                         .cornerRadius(8)
                 }
                 
@@ -679,7 +681,7 @@ private struct ModernModelRow: View {
         HStack(alignment: .top, spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(model.isAvailable ? Color.accentColor.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                    .fill(model.isAvailable ? Color.accentColor.opacity(0.15) : DSColors.surface)
                     .frame(width: 48, height: 48)
                 
                 Image(systemName: modelIcon)
@@ -807,7 +809,7 @@ private struct ModelManagerCardView<Content: View>: View {
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 4)
         )
     }
@@ -858,19 +860,29 @@ private struct CustomModelInstructionsView: View {
                     }
                     .font(.body)
                     .padding()
-                    .background(Color(uiColor: .systemGray6))
+                    .background(DSColors.surface)
                     .cornerRadius(12)
                 }
                 .padding()
             }
             .navigationTitle("Custom Models")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
                     }
                 }
+                #elseif os(macOS)
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                #endif
             }
         }
     }

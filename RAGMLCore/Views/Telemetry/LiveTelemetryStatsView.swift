@@ -148,7 +148,7 @@ struct LiveTelemetryStatsView: View {
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(uiColor: .systemBackground))
+                .fill(DSColors.background)
                 .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 4)
         )
         .overlay(

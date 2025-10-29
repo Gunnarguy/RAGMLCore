@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct SettingsView: View {
     @ObservedObject var ragService: RAGService
@@ -128,8 +131,8 @@ struct SettingsView: View {
             // Subtle modern gradient background
             LinearGradient(
                 colors: [
-                    Color(.systemGroupedBackground),
-                    Color(.systemGroupedBackground).opacity(0.95)
+                    DSColors.background,
+                    DSColors.surface.opacity(0.95)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -249,7 +252,9 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
         }
         .navigationTitle("Settings")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
             .overlay(lifecycleHooks)
     } // body
 
@@ -262,7 +267,11 @@ struct SettingsView: View {
     private var apiKeyAlertButtons: some View {
         Button("Get API Key") {
             if let url = URL(string: "https://platform.openai.com/api-keys") {
+                #if canImport(UIKit)
                 UIApplication.shared.open(url)
+                #elseif os(macOS)
+                NSWorkspace.shared.open(url)
+                #endif
             }
         }
         Button("OK", role: .cancel) {}
@@ -321,7 +330,9 @@ struct SettingsView: View {
             Picker("AI Model", selection: $selectedModel) {
                 aiModelOptions()
             }
+            #if os(iOS)
             .pickerStyle(.navigationLink)
+            #endif
 
             // Model details
             ModelInfoCard(modelType: selectedModel, capabilities: deviceCapabilities)
@@ -521,7 +532,9 @@ struct SettingsView: View {
                             .tag(context)
                         }
                     }
+                    #if os(iOS)
                     .pickerStyle(.navigationLink)
+                    #endif
                     
                     // Explain current setting
                     switch executionContext {
@@ -591,8 +604,10 @@ struct SettingsView: View {
                 HStack {
                     SecureField("sk-proj-...", text: $openaiAPIKey)
                         .textContentType(.password)
+                        #if canImport(UIKit)
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
+                        #endif
                         .onChange(of: openaiAPIKey) { _, _ in
                             apiKeyValidationStatus = .unknown
                         }

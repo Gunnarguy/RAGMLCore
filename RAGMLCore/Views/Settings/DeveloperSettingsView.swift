@@ -153,7 +153,9 @@ struct DeveloperSettingsView: View {
             }
         }
         .navigationTitle("Developer Settings")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onAppear {
             applyLoggingSettings()
         }

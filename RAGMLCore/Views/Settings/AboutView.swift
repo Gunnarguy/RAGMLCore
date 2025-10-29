@@ -56,7 +56,9 @@ struct AboutView: View {
             }
         }
         .navigationTitle("About")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onAppear {
             DispatchQueue.main.async {
                 deviceCapabilities = RAGService.checkDeviceCapabilities()

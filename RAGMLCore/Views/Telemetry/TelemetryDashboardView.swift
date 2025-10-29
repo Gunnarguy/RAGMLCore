@@ -16,8 +16,8 @@ struct TelemetryDashboardView: View {
             // Modern gradient background
             LinearGradient(
                 colors: [
-                    Color(.systemBackground),
-                    Color(.systemGray6).opacity(0.3)
+                    DSColors.background,
+                    DSColors.surface.opacity(0.3)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -43,6 +43,7 @@ struct TelemetryDashboardView: View {
         }
         .navigationTitle("Telemetry Console")
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     telemetry.clear()
@@ -51,6 +52,16 @@ struct TelemetryDashboardView: View {
                 }
                 .disabled(telemetry.events.isEmpty)
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    telemetry.clear()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(telemetry.events.isEmpty)
+            }
+            #endif
         }
     }
 
@@ -74,7 +85,7 @@ struct TelemetryDashboardView: View {
             .pickerStyle(.segmented)
         }
         .padding()
-        .background(Color(.systemBackground))
+        .background(DSColors.background)
     }
 }
 
@@ -199,7 +210,7 @@ private struct ModernTelemetryCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.background)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
     }

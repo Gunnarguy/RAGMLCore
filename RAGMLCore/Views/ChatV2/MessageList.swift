@@ -110,7 +110,7 @@ struct MessageRowView: View {
             }
             .sheet(isPresented: $showDetails) {
                 if let meta = message.metadata {
-                    ResponseDetailsView(
+                    ChatResponseDetailsView(
                         metadata: meta,
                         retrievedChunks: message.retrievedChunks ?? []
                     )
@@ -167,7 +167,7 @@ struct MessageMetaView: View {
             Image(systemName: "clock")
                 .font(.caption2)
                 .foregroundColor(DSColors.secondaryText)
-            Text(date.formatted(time: .shortened))
+            Text(date.formatted(date: .omitted, time: .shortened))
                 .font(DSTypography.meta)
                 .foregroundColor(DSColors.secondaryText)
         }
@@ -339,5 +339,8 @@ struct EmptyListPlaceholder: View {
     return NavigationView {
         MessageListView(messages: .constant(sample))
             .navigationTitle("Preview")
-    }.navigationViewStyle(.stack)
+    }
+    #if os(iOS)
+    .navigationViewStyle(.stack)
+    #endif
 }

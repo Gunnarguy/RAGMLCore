@@ -19,8 +19,8 @@ struct DocumentLibraryView: View {
             // Modern gradient background
             LinearGradient(
                 colors: [
-                    Color(.systemBackground),
-                    Color(.systemGray6).opacity(0.3)
+                    DSColors.background,
+                    DSColors.surface.opacity(0.3)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -51,9 +51,11 @@ struct DocumentLibraryView: View {
             }
         }
         .navigationTitle("Documents")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .automatic) {
                 Button(action: { showingFilePicker = true }) {
                     Label("Add Document", systemImage: "plus")
                 }
@@ -61,7 +63,7 @@ struct DocumentLibraryView: View {
             }
             
             if !ragService.documents.isEmpty {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .automatic) {
                     Button(role: .destructive) {
                         Task {
                             try? await ragService.clearAllDocuments()
@@ -160,7 +162,7 @@ struct ModernDocumentCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
         .contextMenu {
@@ -490,6 +492,7 @@ struct ProcessingOverlay: View {
 
 // MARK: - Document Picker
 
+#if canImport(UIKit)
 struct DocumentPicker: UIViewControllerRepresentable {
     let onDocumentPicked: (URL) -> Void
     
@@ -552,6 +555,26 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
 }
 
+#endif
+
+#if !canImport(UIKit)
+struct DocumentPicker: View {
+    let onDocumentPicked: (URL) -> Void
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "doc.badge.gearshape")
+                .font(.title3)
+                .foregroundColor(.secondary)
+            Text("Document picker is unavailable on this platform.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+    }
+}
+#endif
+
 // MARK: - Processing Summary View
 
 struct ProcessingSummaryView: View {
@@ -612,7 +635,9 @@ struct ProcessingSummaryView: View {
                 .padding()
             }
             .navigationTitle("Processing Complete")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
@@ -645,7 +670,7 @@ struct InfoSection<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color(uiColor: .systemGray6))
+        .background(DSColors.surface)
         .cornerRadius(12)
     }
 }
@@ -696,9 +721,11 @@ struct DocumentDetailsView: View {
             .padding(.vertical, 22)
             .padding(.horizontal, 18)
         }
-        .background(Color(.systemGroupedBackground).ignoresSafeArea())
-        .navigationTitle("Document Intelligence")
-        .navigationBarTitleDisplayMode(.large)
+            .background(DSColors.background.ignoresSafeArea())
+            .navigationTitle("Document Intelligence")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
     }
     
     // MARK: - Document Header Card
@@ -1133,7 +1160,7 @@ private struct DocumentDetailCardView<Content: View>: View {
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 4)
         )
     }

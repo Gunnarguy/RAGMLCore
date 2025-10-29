@@ -42,6 +42,12 @@ Changes Implemented (this pass)
    - New: cline_docs/projectRoadmap.md outlining modernization plan, goals, and progress
    - Updated: This currentTask.md (this file)
 
+4) Platform-gating and DSColors UI unification
+   - Gated .navigationBarTitleDisplayMode and toolbar placements for macOS/iOS across key views
+   - Replaced UIKit color initializers with DSColors.background and DSColors.surface for visual cohesion
+   - Fixed legacy Chat/ChatView.swift: gated nav title mode on iOS and used .automatic toolbar on macOS
+   - Verified macOS build with xcodebuild Debug scheme on 2025-10-29
+
 Build/Runtime Notes
 - MLX Local backend:
   - Designed for macOS. Start an MLX server separately, then select “MLX Local (macOS)” in Settings.
@@ -82,6 +88,7 @@ Files touched (summary)
   - Views/Settings/SettingsView.swift (picker, pipeline stages, instantiation)
 
 Status
+- macOS build succeeded after platform-gating pass including legacy ChatView (xcodebuild Debug, 2025-10-29).
 - Compiles with new sources (Xcode’s file-system synchronized group should pick up new Swift files).
 - MLX Local requires user to run a local server on macOS to be “available.”
 - Core ML sentence embeddings and CoreML LLM are scaffolded but not functional yet (tokenization/IO TBD).

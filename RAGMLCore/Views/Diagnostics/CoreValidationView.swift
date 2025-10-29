@@ -21,8 +21,8 @@ struct CoreValidationView: View {
             // Modern gradient background
             LinearGradient(
                 colors: [
-                    Color(.systemBackground),
-                    Color(.systemGray6).opacity(0.3)
+                    DSColors.background,
+                    DSColors.surface.opacity(0.3)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -111,7 +111,9 @@ struct CoreValidationView: View {
             }
         }
         .navigationTitle("Core Validation")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
     
     // MARK: - Test Runner
@@ -400,7 +402,7 @@ struct ModernStatusCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
     }
@@ -442,13 +444,13 @@ struct ModernTestResultCard: View {
                 .padding(.vertical, 4)
                 .background(
                     Capsule()
-                        .fill(Color(.systemGray5))
+                        .fill(DSColors.surface)
                 )
         }
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 2)
         )
     }
@@ -496,7 +498,7 @@ struct ModernTestInfoSection: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
     }

@@ -55,7 +55,9 @@ struct ChatScreen: View {
             )
         }
         .navigationTitle("Chat")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
     
     // MARK: - Execution Context mapping
@@ -328,7 +330,7 @@ struct ComposerStub: View {
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color(uiColor: .systemGray6))
+                        .fill(DSColors.surface)
                 )
 
             Button {
@@ -348,7 +350,7 @@ struct ComposerStub: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color(uiColor: .systemBackground))
+        .background(DSColors.background)
     }
 }
 
@@ -358,5 +360,7 @@ struct ComposerStub: View {
     NavigationView {
         ChatScreen(ragService: RAGService())
     }
+    #if os(iOS)
     .navigationViewStyle(.stack)
+    #endif
 }

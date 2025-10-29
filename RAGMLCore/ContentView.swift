@@ -25,7 +25,9 @@ struct ContentView: View {
                     ChatView(ragService: ragService)
                 }
             }
+            #if os(iOS)
             .navigationViewStyle(.stack)
+            #endif
             .tabItem {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
             }
@@ -34,7 +36,9 @@ struct ContentView: View {
             NavigationView {
                 DocumentLibraryView(ragService: ragService)
             }
+            #if os(iOS)
             .navigationViewStyle(.stack)
+            #endif
             .tabItem {
                 Label("Documents", systemImage: "doc.text.magnifyingglass")
             }
@@ -44,7 +48,9 @@ struct ContentView: View {
                 VisualizationsView()
                     .environmentObject(ragService)
             }
+            #if os(iOS)
             .navigationViewStyle(.stack)
+            #endif
             .tabItem {
                 Label("Visualizations", systemImage: "chart.xyaxis.line")
             }
@@ -53,7 +59,9 @@ struct ContentView: View {
             NavigationView {
                 ModelManagerView(ragService: ragService)
             }
+            #if os(iOS)
             .navigationViewStyle(.stack)
+            #endif
             .tabItem {
                 Label("Models", systemImage: "brain.head.profile")
             }
@@ -62,7 +70,9 @@ struct ContentView: View {
             NavigationView {
                 SettingsView(ragService: ragService)
             }
+            #if os(iOS)
             .navigationViewStyle(.stack)
+            #endif
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
             }

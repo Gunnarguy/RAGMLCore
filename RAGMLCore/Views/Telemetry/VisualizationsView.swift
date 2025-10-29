@@ -72,7 +72,9 @@ struct VisualizationsView: View {
             }
         }
         .navigationTitle("Visualizations")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
     }
     
     private var backgroundGradient: some View {
@@ -132,7 +134,7 @@ struct VisualizationsView: View {
             }
         }
         .padding()
-        .background(Color(.systemBackground))
+        .background(DSColors.background)
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.05), radius: 8)
         .padding(.horizontal)
@@ -191,7 +193,7 @@ struct VisualizationsView: View {
             .background(
                 selectedVisualization == type
                     ? Color.blue.opacity(0.1)
-                    : Color(.systemGray6)
+                    : DSColors.surface
             )
             .cornerRadius(12)
             .overlay(
@@ -350,7 +352,7 @@ struct EmbeddingSpacePlaceholder: View {
             // Chart placeholder
             ZStack {
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(.systemBackground))
+                    .fill(DSColors.background)
                     .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
                 
                 VStack(spacing: 16) {
@@ -470,7 +472,7 @@ struct ChunkDistributionView: View {
                 .padding()
                 .background(
                     RoundedRectangle(cornerRadius: 16)
-                        .fill(Color(.systemBackground))
+                        .fill(DSColors.background)
                         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
                 )
                 .padding(.horizontal)
@@ -562,7 +564,7 @@ struct EmptyAnalyticsView: View {
         .padding(.vertical, 40)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.background)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
     }
@@ -658,7 +660,7 @@ struct QueryEventCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.background)
                 .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 2)
         )
     }
@@ -715,7 +717,7 @@ struct PipelineStagesCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         )
     }
@@ -754,6 +756,7 @@ struct StageMetricRow: View {
 
 struct SystemMetricsGrid: View {
     var body: some View {
+        #if canImport(UIKit)
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
             StatCard(
                 icon: "memorychip",
@@ -769,6 +772,23 @@ struct SystemMetricsGrid: View {
                 color: .green
             )
         }
+        #else
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+            StatCard(
+                icon: "desktopcomputer",
+                label: "Device",
+                value: "Mac",
+                color: .blue
+            )
+            
+            StatCard(
+                icon: "cpu",
+                label: "OS",
+                value: ProcessInfo.processInfo.operatingSystemVersionString,
+                color: .green
+            )
+        }
+        #endif
     }
 }
 
@@ -804,7 +824,7 @@ struct StatCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemBackground))
+                .fill(DSColors.surface)
                 .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 2)
         )
     }
@@ -862,7 +882,9 @@ struct EmbeddingInfoSheet: View {
                 .padding()
             }
             .navigationTitle("Embedding Space")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -946,7 +968,8 @@ struct SimilarityHeatmapView: View {
                 }
             }
             .padding()
-            .background(Color(.systemBackground))
+            .background(DSColors.background)
+            .background(DSColors.background)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 8)
             .padding(.horizontal)
@@ -980,7 +1003,7 @@ struct SimilarityHeatmapView: View {
                     .padding()
                 }
                 .frame(maxHeight: 400)
-                .background(Color(.systemGray6))
+                .background(DSColors.surface)
                 .cornerRadius(16)
                 .padding(.horizontal)
             }
@@ -1073,7 +1096,7 @@ struct RetrievalPatternsView: View {
                 }
             }
             .padding()
-            .background(Color(.systemBackground))
+            .background(DSColors.background)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 8)
             .padding(.horizontal)
@@ -1113,7 +1136,7 @@ struct RetrievalPatternsView: View {
                         AxisMarks(position: .bottom)
                     }
                     .padding()
-                    .background(Color(.systemGray6))
+                    .background(DSColors.surface)
                     .cornerRadius(16)
                     .padding(.horizontal)
                 }
@@ -1216,7 +1239,7 @@ struct PipelineFlowView: View {
                 }
             }
             .padding()
-            .background(Color(.systemBackground))
+            .background(DSColors.background)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 8)
             .padding(.horizontal)
@@ -1234,7 +1257,7 @@ struct PipelineFlowView: View {
                 }
             }
             .padding()
-            .background(Color(.systemGray6).opacity(0.3))
+            .background(DSColors.surface.opacity(0.3))
             .cornerRadius(16)
             .padding(.horizontal)
             
@@ -1271,7 +1294,7 @@ struct PipelineFlowView: View {
                             }
                         }
                         .padding()
-                        .background(Color(.systemBackground))
+                        .background(DSColors.background)
                         .cornerRadius(12)
                     }
                     .padding(.horizontal)
@@ -1352,7 +1375,7 @@ struct PipelineStageCard: View {
                 .frame(width: 40, height: 40)
                 .background(
                     Circle()
-                        .fill(isActive ? categoryColor(stage.category) : Color(.systemGray5))
+                        .fill(isActive ? categoryColor(stage.category) : DSColors.surface)
                 )
             
             Text(stage.name)
@@ -1369,7 +1392,7 @@ struct PipelineStageCard: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isActive ? categoryColor(stage.category).opacity(0.1) : Color(.systemBackground))
+                .fill(isActive ? categoryColor(stage.category).opacity(0.1) : DSColors.background)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -1427,7 +1450,7 @@ struct SemanticClusteringView: View {
                 ClusteringInfoCard()
             }
             .padding()
-            .background(Color(.systemBackground))
+            .background(DSColors.background)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 8)
             .padding(.horizontal)
@@ -1457,7 +1480,7 @@ struct SemanticClusteringView: View {
                     .foregroundColor(.secondary)
             }
             .padding()
-            .background(Color(.systemGray6))
+            .background(DSColors.surface)
             .cornerRadius(12)
             .padding(.horizontal)
             
@@ -1521,7 +1544,7 @@ struct SemanticClusteringView: View {
                 }
                 .frame(height: CGFloat(selectedK * 50))
                 .padding()
-                .background(Color(.systemGray6))
+                .background(DSColors.surface)
                 .cornerRadius(16)
                 .padding(.horizontal)
             }

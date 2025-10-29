@@ -1,6 +1,6 @@
 ## Project Roadmap – RAGMLCore AI Modernization (Apple 2025 + MLX)
 
-Last updated: 2025-10-28
+Last updated: 2025-10-29
 
 ## Vision
 Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
@@ -63,6 +63,11 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
 - Telemetry/Diagnostics: 0/3
 
 ## Completed Tasks (History)
+- 2025-10-29
+  - Platform-gating and DSColors pass across Settings, Model Management, Diagnostics, Telemetry, Documents, and legacy ChatView
+  - Fixed ChatView macOS build blockers (iOS-gated navigationBarTitleDisplayMode, macOS .automatic toolbar placement)
+  - Verified macOS Debug build via xcodebuild (2025-10-29)
+  - Updated cline_docs/currentTask.md to record status
 - 2025-10-28
   - Added EmbeddingProvider abstraction and NLEmbeddingProvider
   - Refactored EmbeddingService to provider-based design
