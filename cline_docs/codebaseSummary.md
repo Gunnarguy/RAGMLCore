@@ -1,10 +1,12 @@
 ## Codebase Summary – RAGMLCore
 
-Last updated: 2025-10-28
+Last updated: 2025-10-29
 
 ## Key Components and Their Interactions
 - Views
-  - ChatView: main chat UI, triggers RAGService.query
+  - ChatScreen (ChatV2): orchestrates chat flow, streaming, overlays; triggers RAGService.query
+  - MessageListView, MessageRowView, MessageBubbleView, SourceChipsView
+  - StageProgressBar, PipelineOverlayView, LiveCountersStrip, RetrievalSourcesTray, TokenCadenceView, EventToasts (ToastStackView)
   - SettingsView: model selection, PCC controls, fallbacks, pipeline visualization
   - Diagnostics: CoreValidationView, TelemetryDashboardView for testing and telemetry
 - Services
@@ -33,7 +35,7 @@ Last updated: 2025-10-28
    - SemanticChunker creates chunks with metadata
    - EmbeddingService generates embeddings via provider; stored in VectorDatabase
 2. Query
-   - ChatView calls RAGService.query(question, config)
+   - ChatScreen calls RAGService.query(question, config)
    - Query enhancement (optional), embed query, hybrid search (vector + BM25), re-ranking (RRF/MMR via RAGEngine), context assembly
 3. Generation
    - LLMService chosen by user preferences and availability (Apple FM → ChatGPT Ext → OpenAI → OnDeviceAnalysis; now MLX/ Core ML are options)
@@ -53,6 +55,15 @@ Last updated: 2025-10-28
 - Implemented MLXLocalLLMService (macOS-only local server bridge; OpenAI-compatible request body)
 - Extended LLMModelType with `.mlxLocal` and `.coreMLLocal`
 - Updated SettingsView to include MLX/Core ML options and corresponding pipeline stages
+- ChatV2 UI overhaul:
+  - StageProgressBar with per-stage elapsed timers and shimmer
+  - PipelineOverlayView behind the message list with animated flow
+  - LiveCountersStrip showing TTFT, tokens, tok/s, retrieved chunks
+  - RetrievalSourcesTray with live source chips and details sheet
+  - TokenCadenceView integrated with streaming row next to TypingIndicator
+  - EventToasts (ToastStackView) for stage milestones and TTFT
+  - ExecutionBadge indicating On-Device vs PCC via TTFT heuristic
+  - Legacy ChatView removed; V2 unified across app (2025-10-29)
 
 ## User Feedback Integration and Impact on Development
 - Request: adopt latest Apple 2025 AI stack and avoid deprecated paths; ensure on-device-first, PCC fallback, local open-models (MLX) and Core ML support

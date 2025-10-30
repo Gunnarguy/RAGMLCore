@@ -67,7 +67,17 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
   - Platform-gating and DSColors pass across Settings, Model Management, Diagnostics, Telemetry, Documents, and legacy ChatView
   - Fixed ChatView macOS build blockers (iOS-gated navigationBarTitleDisplayMode, macOS .automatic toolbar placement)
   - Verified macOS Debug build via xcodebuild (2025-10-29)
+  - ChatV2 live visualization and streaming UX:
+    - StageProgressBar per-stage timers + subtle shimmer
+    - PipelineOverlayView behind chat with animated flow and stage pulses
+    - LiveCountersStrip (TTFT, tokens, tok/s, retrieved chunks)
+    - RetrievalSourcesTray with live source chips and details sheet
+    - TokenCadenceView integrated alongside TypingIndicator
+    - Event ribbon toasts for milestones and TTFT
+    - ExecutionBadge indicates On-Device vs PCC via TTFT heuristic
+  - iOS Simulator Debug build succeeded (iPhone 16, iOS 26.0.1) via xcodebuild
   - Updated cline_docs/currentTask.md to record status
+  - Removed legacy Chat/ChatView.swift and unified on ChatV2 (2025-10-29)
 - 2025-10-28
   - Added EmbeddingProvider abstraction and NLEmbeddingProvider
   - Refactored EmbeddingService to provider-based design

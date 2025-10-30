@@ -48,6 +48,16 @@ Changes Implemented (this pass)
    - Fixed legacy Chat/ChatView.swift: gated nav title mode on iOS and used .automatic toolbar on macOS
    - Verified macOS build with xcodebuild Debug scheme on 2025-10-29
 
+5) UI/UX – ChatV2 Live Visualization and Streaming UX
+   - StageProgressBar: per‑stage elapsed timers (Embedding, Searching, Generating) + subtle shimmer while active
+   - PipelineOverlayView: animated flow line and stage nodes rendered behind the message list (non‑interactive, allowsHitTesting(false))
+   - LiveCountersStrip: TTFT, Tokens, tok/s, retrieved chunk count displayed during generation
+   - RetrievalSourcesTray: compact tray under the list during Searching/Generating, grows with live source chips; opens details sheet
+   - TokenCadenceView: animated bars reflecting streaming rhythm; integrated next to TypingIndicator
+   - Event ribbon toasts: ephemeral top toasts for milestones (Embedding started, Searching top K, Generating…, Found N sources, TTFT)
+   - Execution badge: TTFT‑based on‑device vs PCC inference surfaced in ExecutionBadge
+   - iOS Simulator Debug build succeeded via xcodebuild (RAGMLCore scheme, iPhone 16 iOS 26.0.1)
+
 Build/Runtime Notes
 - MLX Local backend:
   - Designed for macOS. Start an MLX server separately, then select “MLX Local (macOS)” in Settings.
@@ -90,5 +100,6 @@ Files touched (summary)
 Status
 - macOS build succeeded after platform-gating pass including legacy ChatView (xcodebuild Debug, 2025-10-29).
 - Compiles with new sources (Xcode’s file-system synchronized group should pick up new Swift files).
+- Legacy ChatView removed; app unified on ChatV2 (2025-10-29).
 - MLX Local requires user to run a local server on macOS to be “available.”
 - Core ML sentence embeddings and CoreML LLM are scaffolded but not functional yet (tokenization/IO TBD).

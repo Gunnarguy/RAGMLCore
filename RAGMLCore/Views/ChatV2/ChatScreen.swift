@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 // ChatV2 entry point (feature-flagged from ContentView)
 struct ChatScreen: View {
@@ -15,6 +16,21 @@ struct ChatScreen: View {
     @State private var messages: [ChatMessage] = []
     @State private var streamingText: String = ""
     @State private var generationStart: Date? = nil
+    // Per-stage timing
+    @State private var embeddingStart: Date? = nil
+    @State private var searchingStart: Date? = nil
+    @State private var generatingStartTS: Date? = nil
+    @State private var embeddingElapsedFinal: TimeInterval? = nil
+    @State private var searchingElapsedFinal: TimeInterval? = nil
+    @State private var generatingElapsedFinal: TimeInterval? = nil
+    // Live clock tick to drive elapsed UI
+    @State private var nowTick: Date = Date()
+    @State private var processingClock = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
+    // Ephemeral UI and retrieval
+    @State private var toasts: [ToastItem] = []
+    @State private var currentRetrievedChunks: [RetrievedChunk] = []
+    @State private var currentMetadata: ResponseMetadata? = nil
+    @State private var showRetrievedDetails: Bool = false
     
     // Processing State
     @State private var isProcessing: Bool = false
@@ -30,8 +46,7 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            ChatHeader(onNewChat: { newChat() }, onClearChat: { clearChat() })
+            // Header removed (moved actions to NavigationBar toolbar)
 
             // Context / Status Bar
             ContextStatusBarView(
@@ -49,8 +64,15 @@ struct ChatScreen: View {
                     retrievedCount: stage == .searching ? 0 : latestRetrievedCount,
                     isGenerating: isProcessing
                 )
+                .opacity(stage == .idle ? 0.0 : 0.5)
+                .zIndex(0)
                 MessageListView(messages: $messages)
+                    .zIndex(1)
             }
+            .clipped()
+            .padding(.bottom, DSSpacing.md)
+            
+            
             
             // Streaming row (verbose but clean)
             if isProcessing && !streamingText.isEmpty {
@@ -65,7 +87,10 @@ struct ChatScreen: View {
                             .background(DSColors.surface)
                             .clipShape(RoundedRectangle(cornerRadius: DSCorners.bubble, style: .continuous))
                             .bubbleShadow()
-                        TypingIndicator()
+                        HStack(spacing: DSSpacing.xs) {
+                            TokenCadenceView(tokensApprox: tokensApprox, tokensPerSecond: tokensPerSecondApprox)
+                            TypingIndicator()
+                        }
                     }
                     Spacer(minLength: 48)
                 }
@@ -73,7 +98,17 @@ struct ChatScreen: View {
                 .transition(.opacity.combined(with: .scale))
             }
             
-            // Live telemetry strip during generation
+            // Stage indicator + execution badge (stacked, not overlay)
+            StageProgressBar(
+                stage: stage,
+                execution: execution,
+                ttft: ttft,
+                embeddingElapsed: embeddingElapsedDisplay,
+                searchingElapsed: searchingElapsedDisplay,
+                generatingElapsed: generatingElapsedDisplay
+            )
+            
+            // Live telemetry strip during generation (stacked, not overlay)
             if isProcessing {
                 LiveCountersStrip(
                     ttft: ttft,
@@ -81,11 +116,7 @@ struct ChatScreen: View {
                     tokensPerSecondApprox: tokensPerSecondApprox,
                     retrievedCount: latestRetrievedCount
                 )
-                LiveTelemetryStatsView()
             }
-            
-            // Stage indicator + execution badge
-            StageProgressBar(stage: stage, execution: execution, ttft: ttft)
 
             Divider()
 
@@ -99,6 +130,51 @@ struct ChatScreen: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .onReceive(processingClock) { _ in
+            if isProcessing {
+                nowTick = Date()
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        newChat()
+                    } label: {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                    }
+                    Button(role: .destructive) {
+                        clearChat()
+                    } label: {
+                        Label("Clear Chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .imageScale(.large)
+                }
+            }
+        }
+        .sheet(isPresented: $showRetrievedDetails) {
+            if let meta = currentMetadata {
+                ChatResponseDetailsView(
+                    metadata: meta,
+                    retrievedChunks: currentRetrievedChunks
+                )
+            } else {
+                VStack(alignment: .leading, spacing: DSSpacing.md) {
+                    Text("Retrieved Sources")
+                        .font(DSTypography.title)
+                    if currentRetrievedChunks.isEmpty {
+                        Text("Searching…")
+                            .font(DSTypography.body)
+                            .foregroundColor(DSColors.secondaryText)
+                    } else {
+                        SourceChipsView(chunks: currentRetrievedChunks) { }
+                    }
+                }
+                .padding()
+            }
+        }
     }
     
     // MARK: - Derived counters
@@ -117,6 +193,29 @@ struct ChatScreen: View {
         let elapsed = Date().timeIntervalSince(start)
         guard elapsed > 0 else { return 0 }
         return Double(tokensApprox) / elapsed
+    }
+    
+    // Live per-stage elapsed timers
+    private var embeddingElapsedDisplay: TimeInterval? {
+        let _ = nowTick
+        if let final = embeddingElapsedFinal, stage != .embedding { return final }
+        guard let start = embeddingStart else { return embeddingElapsedFinal }
+        return Date().timeIntervalSince(start)
+    }
+    private var searchingElapsedDisplay: TimeInterval? {
+        let _ = nowTick
+        if let final = searchingElapsedFinal, stage == .generating || stage == .complete || stage == .idle {
+            return final
+        }
+        guard let start = searchingStart else { return searchingElapsedFinal }
+        return Date().timeIntervalSince(start)
+    }
+    private var generatingElapsedDisplay: TimeInterval? {
+        let _ = nowTick
+        if stage == .generating, let start = generatingStartTS {
+            return Date().timeIntervalSince(start)
+        }
+        return generatingElapsedFinal
     }
     
     // MARK: - Execution Context mapping
@@ -139,12 +238,32 @@ struct ChatScreen: View {
         ttft = nil
         streamingText = ""
         generationStart = nil
+        embeddingStart = nil
+        searchingStart = nil
+        generatingStartTS = nil
+        embeddingElapsedFinal = nil
+        searchingElapsedFinal = nil
+        generatingElapsedFinal = nil
+        currentRetrievedChunks = []
+        currentMetadata = nil
+        toasts.removeAll()
+        showRetrievedDetails = false
     }
     
     private func clearChat() {
         messages.removeAll()
         streamingText = ""
         generationStart = nil
+        embeddingStart = nil
+        searchingStart = nil
+        generatingStartTS = nil
+        embeddingElapsedFinal = nil
+        searchingElapsedFinal = nil
+        generatingElapsedFinal = nil
+        currentRetrievedChunks = []
+        currentMetadata = nil
+        toasts.removeAll()
+        showRetrievedDetails = false
     }
     
     private func sendMessage(_ text: String) {
@@ -173,11 +292,27 @@ struct ChatScreen: View {
         Task(priority: .userInitiated) {
             do {
                 // Stage 1: Embedding
-                await MainActor.run { self.stage = .embedding }
+                await MainActor.run {
+                    self.stage = .embedding
+                    self.embeddingStart = Date()
+                    self.embeddingElapsedFinal = nil
+                    self.searchingStart = nil
+                    self.searchingElapsedFinal = nil
+                    self.generatingStartTS = nil
+                    self.generatingElapsedFinal = nil
+                    self.pushToast("Embedding started", icon: "brain.head.profile", tint: DSColors.accent)
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 
                 // Stage 2: Searching
-                await MainActor.run { self.stage = .searching }
+                await MainActor.run {
+                    self.stage = .searching
+                    self.searchingStart = Date()
+                    if let embStart = self.embeddingStart {
+                        self.embeddingElapsedFinal = Date().timeIntervalSince(embStart)
+                    }
+                    self.pushToast("Searching top \(capturedTopK)", icon: "magnifyingglass", tint: .green)
+                }
                 
                 let config = InferenceConfig(
                     maxTokens: capturedMaxTokens,
@@ -193,9 +328,20 @@ struct ChatScreen: View {
                 await MainActor.run {
                     self.stage = .generating
                     self.generationStart = Date()
+                    self.generatingStartTS = self.generationStart
+                    if let searchStart = self.searchingStart, let genStart = self.generationStart {
+                        self.searchingElapsedFinal = genStart.timeIntervalSince(searchStart)
+                    }
+                    self.pushToast("Generating…", icon: "sparkles", tint: DSColors.accent)
                 }
                 
                 let response = try await capturedService.query(capturedQuery, topK: capturedTopK, config: config)
+                
+                await MainActor.run {
+                    self.currentRetrievedChunks = response.retrievedChunks
+                    self.currentMetadata = response.metadata
+                    self.pushToast("Found \(response.retrievedChunks.count) source\(response.retrievedChunks.count == 1 ? "" : "s")", icon: "doc.text.magnifyingglass", tint: .green)
+                }
                 
                 // Simulated streaming of the full response in chunks for a responsive UI
                 let responseText = response.generatedResponse
@@ -213,6 +359,8 @@ struct ChatScreen: View {
                     await MainActor.run {
                         self.ttft = first
                         self.execution = first < 1.0 ? .onDevice : .privateCloudCompute
+                        let ttftString = first < 1.0 ? String(format: "%.0f ms", first * 1000) : String(format: "%.2f s", first)
+                        self.pushToast("TTFT \(ttftString)", icon: "timer", tint: DSColors.accent)
                     }
                 }
                 
@@ -224,6 +372,7 @@ struct ChatScreen: View {
                 )
                 
                 await MainActor.run {
+                    self.streamingText = ""
                     self.messages.append(assistant)
                     self.stage = .complete
                 }
@@ -231,6 +380,9 @@ struct ChatScreen: View {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 
                 await MainActor.run {
+                    if let genStart = self.generatingStartTS {
+                        self.generatingElapsedFinal = Date().timeIntervalSince(genStart)
+                    }
                     self.isProcessing = false
                     self.stage = .idle
                     self.streamingText = ""
@@ -244,8 +396,15 @@ struct ChatScreen: View {
             }
         }
     }
+    
+    // MARK: - Toasts
+    
+    private func pushToast(_ title: String, icon: String, tint: Color) {
+        // Toast UI disabled for layout stabilization
+        // Intentionally no-op to avoid any overlay/stack interference
+    }
 }
-
+ 
 // MARK: - Header
 
 struct ChatHeader: View {

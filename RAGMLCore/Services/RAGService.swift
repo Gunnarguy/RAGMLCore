@@ -533,7 +533,7 @@ class RAGService: ObservableObject {
         let inferenceConfig = config ?? InferenceConfig()
         // Query heuristics for short/generic prompts
         let queryWords = question.split(separator: " ").count
-        let effectiveTopK = (queryWords <= 2) ? min(topK, 3) : min(topK, 10)
+        let effectiveTopK = max(1, (queryWords <= 2) ? min(topK, 3) : min(topK, 10))
         // Fetch current stored chunk count from vector database (fallback to cached total)
         let totalStored = (try? await vectorDatabase.count()) ?? totalChunksStored
         
@@ -726,6 +726,18 @@ class RAGService: ObservableObject {
                     duration: rerankTime
                 )
                 
+                if rerankedChunks.isEmpty {
+                    Log.warning("⚠️  [RAGService] Re-ranking yielded no candidates; falling back to direct chat", category: .retrieval)
+                    return try await generateDirectChatResponse(
+                        question: question,
+                        ragQuery: ragQuery,
+                        inferenceConfig: inferenceConfig,
+                        pipelineStartTime: pipelineStartTime,
+                        retrievalTime: retrievalTime,
+                        fallbackNote: "No re-ranked candidates; replied without RAG context."
+                    )
+                }
+                
                 // Step 4.3: Filter low-confidence chunks (critical for medical accuracy)
                 let minSimilarity: Float = 0.35  // Threshold: chunks below this are likely not relevant
                 let filteredChunks = await engine.filterBySimilarity(
@@ -780,6 +792,18 @@ class RAGService: ObservableObject {
                     duration: mmrTime
                 )
                 
+                if diverseChunks.isEmpty {
+                    Log.warning("⚠️  [RAGService] MMR returned no candidates; falling back to direct chat", category: .retrieval)
+                    return try await generateDirectChatResponse(
+                        question: question,
+                        ragQuery: ragQuery,
+                        inferenceConfig: inferenceConfig,
+                        pipelineStartTime: pipelineStartTime,
+                        retrievalTime: retrievalTime,
+                        fallbackNote: "No diverse candidates after MMR; replied without RAG context."
+                    )
+                }
+                
                 Log.verbose("\nFinal diverse chunks:", category: .retrieval)
                 for (index, chunk) in diverseChunks.enumerated() {
                     let preview = chunk.chunk.content.prefix(80).replacingOccurrences(of: "\n", with: " ")
@@ -828,6 +852,19 @@ class RAGService: ObservableObject {
                         "chars": "\(contextSize)"
                     ]
                 )
+                
+                // If context is empty, fallback to direct chat to avoid downstream failures
+                if actualChunksUsed == 0 || context.isEmpty {
+                    Log.warning("⚠️  [RAGService] Empty context after assembly; falling back to direct chat", category: .retrieval)
+                    return try await generateDirectChatResponse(
+                        question: question,
+                        ragQuery: ragQuery,
+                        inferenceConfig: inferenceConfig,
+                        pipelineStartTime: pipelineStartTime,
+                        retrievalTime: retrievalTime,
+                        fallbackNote: "Empty assembled context; replied without RAG context."
+                    )
+                }
                 
                 // Step 6: Generate response using LLM with augmented context
                 Log.section("Step 6: LLM Generation", level: .info, category: .pipeline)
