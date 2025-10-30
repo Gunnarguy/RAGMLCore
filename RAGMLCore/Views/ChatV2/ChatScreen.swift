@@ -14,6 +14,7 @@ struct ChatScreen: View {
     @State private var showScrollToBottom: Bool = false
     @State private var messages: [ChatMessage] = []
     @State private var streamingText: String = ""
+    @State private var generationStart: Date? = nil
     
     // Processing State
     @State private var isProcessing: Bool = false
@@ -41,8 +42,15 @@ struct ChatScreen: View {
 
             Divider()
 
-            // Message list
-            MessageListView(messages: $messages)
+            // Message list with pipeline overlay behind
+            ZStack(alignment: .top) {
+                PipelineOverlayView(
+                    stage: stage,
+                    retrievedCount: stage == .searching ? 0 : latestRetrievedCount,
+                    isGenerating: isProcessing
+                )
+                MessageListView(messages: $messages)
+            }
             
             // Streaming row (verbose but clean)
             if isProcessing && !streamingText.isEmpty {
@@ -67,6 +75,12 @@ struct ChatScreen: View {
             
             // Live telemetry strip during generation
             if isProcessing {
+                LiveCountersStrip(
+                    ttft: ttft,
+                    tokensApprox: tokensApprox,
+                    tokensPerSecondApprox: tokensPerSecondApprox,
+                    retrievedCount: latestRetrievedCount
+                )
                 LiveTelemetryStatsView()
             }
             
@@ -85,6 +99,24 @@ struct ChatScreen: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+    
+    // MARK: - Derived counters
+    private var latestRetrievedCount: Int {
+        messages.last(where: { $0.role == .assistant })?.retrievedChunks?.count ?? 0
+    }
+    
+    private var tokensApprox: Int {
+        // Approximate tokens by whitespace-separated words
+        let words = streamingText.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        return words.count
+    }
+    
+    private var tokensPerSecondApprox: Double {
+        guard let start = generationStart else { return 0 }
+        let elapsed = Date().timeIntervalSince(start)
+        guard elapsed > 0 else { return 0 }
+        return Double(tokensApprox) / elapsed
     }
     
     // MARK: - Execution Context mapping
@@ -106,11 +138,13 @@ struct ChatScreen: View {
         execution = .unknown
         ttft = nil
         streamingText = ""
+        generationStart = nil
     }
     
     private func clearChat() {
         messages.removeAll()
         streamingText = ""
+        generationStart = nil
     }
     
     private func sendMessage(_ text: String) {
@@ -156,7 +190,10 @@ struct ChatScreen: View {
                 )
                 
                 // Stage 3: Generating
-                await MainActor.run { self.stage = .generating }
+                await MainActor.run {
+                    self.stage = .generating
+                    self.generationStart = Date()
+                }
                 
                 let response = try await capturedService.query(capturedQuery, topK: capturedTopK, config: config)
                 
@@ -197,6 +234,7 @@ struct ChatScreen: View {
                     self.isProcessing = false
                     self.stage = .idle
                     self.streamingText = ""
+                    self.generationStart = nil
                 }
             } catch {
                 await MainActor.run {
