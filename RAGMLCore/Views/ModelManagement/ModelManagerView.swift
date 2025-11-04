@@ -9,10 +9,13 @@ import SwiftUI
 
 struct ModelManagerView: View {
     @ObservedObject var ragService: RAGService
+    @EnvironmentObject private var settings: SettingsStore
     @State private var availableModels: [LLMModel] = []
     @State private var selectedModel: LLMModel?
     @State private var showingModelInfo = false
     @State private var deviceCapabilities = DeviceCapabilities()
+    @StateObject private var downloadService = ModelDownloadService.shared
+    @StateObject private var modelRegistry = ModelRegistry.shared
     
     var body: some View {
         ZStack {
@@ -44,6 +47,12 @@ struct ModelManagerView: View {
                     
                     // Performance Metrics
                     performanceMetricsCard
+
+                    // Model Gallery (Downloads)
+                    modelGalleryCard
+
+                    // Installed Models
+                    installedModelsCard
                     
                     // Available Models (Focused)
                     availableModelsCard
@@ -61,6 +70,10 @@ struct ModelManagerView: View {
                 let caps = RAGService.checkDeviceCapabilities()
                 deviceCapabilities = caps
                 loadAvailableModels()
+                Task {
+                    await ModelDownloadService.shared.loadCatalog(from: nil)
+                    await ModelRegistry.shared.load()
+                }
             }
         }
         .sheet(isPresented: $showingModelInfo) {
@@ -362,6 +375,180 @@ struct ModelManagerView: View {
     }
     
     @ViewBuilder
+    private var modelGalleryCard: some View {
+        ModelManagerCardView(icon: "tray.and.arrow.down.fill", title: "Model Gallery", caption: "Tap to download curated on-device models") {
+            VStack(spacing: 12) {
+                if downloadService.isLoadingCatalog {
+                    HStack {
+                        ProgressView()
+                        Text("Loading models...")
+                            .foregroundColor(.secondary)
+                            .font(.subheadline)
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                } else if let err = downloadService.catalogError {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text(err)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    .padding(.vertical, 8)
+                } else if downloadService.catalog.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray")
+                            .font(.largeTitle)
+                            .foregroundColor(.secondary)
+                        Text("No models available")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                } else {
+                    ForEach(downloadService.catalog) { entry in
+                        DownloadableModelRow(
+                            entry: entry,
+                            state: downloadService.downloads[entry.id],
+                            onDownload: { downloadService.download(entry: entry) },
+                            onPause: { downloadService.pause(entryID: entry.id) },
+                            onResume: { downloadService.resume(entryID: entry.id) },
+                            onCancel: { downloadService.cancel(entryID: entry.id) },
+                            formatBytes: formatBytes,
+                            downloadSpeedAndETA: downloadSpeedAndETA
+                        )
+                        if entry.id != downloadService.catalog.last?.id { 
+                            Divider()
+                                .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var installedModelsCard: some View {
+        ModelManagerCardView(icon: "shippingbox.fill", title: "Installed Models", caption: "Hot‑swappable cartridges") {
+            VStack(spacing: 10) {
+                if modelRegistry.all().isEmpty {
+                    Text("No local models installed yet. Use the Model Gallery to download.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(modelRegistry.all()) { installed in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Image(systemName: {
+                                    switch installed.backend {
+                                    case .gguf: return "doc.badge.gearshape"
+                                    case .coreML: return "cpu"
+                                    case .mlxServer: return "server.rack"
+                                    }
+                                }())
+                                .foregroundColor(.accentColor)
+                                Text(installed.name)
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                if let vendor = installed.vendor {
+                                    Text(vendor)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            HStack(spacing: 10) {
+                                if let size = installed.sizeBytes {
+                                    Label(formatBytes(size), systemImage: "externaldrive.fill")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                if let q = installed.quantization {
+                                    Label(q, systemImage: "cpu")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Label(installed.backend.displayName, systemImage: installed.backend.iconName)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack(spacing: 10) {
+                                switch installed.backend {
+                                case .gguf:
+                                    if let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) {
+                                        Button {
+                                            Task {
+                                                await ModelActivationService.activate(installed, ragService: ragService, settings: settings)
+                                                await MainActor.run { loadAvailableModels() }
+                                            }
+                                        } label: {
+                                            Label("Make Active", systemImage: "play.circle.fill")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .controlSize(.small)
+                                    } else {
+                                        Button {
+                                            // disabled placeholder
+                                        } label: {
+                                            Label("Missing File", systemImage: "exclamationmark.triangle")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(true)
+                                    }
+                                case .coreML:
+                                    if let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) {
+                                        Button {
+                                            Task {
+                                                await ModelActivationService.activate(installed, ragService: ragService, settings: settings)
+                                                await MainActor.run { loadAvailableModels() }
+                                            }
+                                        } label: {
+                                            Label("Make Active", systemImage: "play.circle")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .controlSize(.small)
+                                    } else {
+                                        Button {
+                                            // disabled placeholder
+                                        } label: {
+                                            Label("Configure", systemImage: "gear")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(true)
+                                    }
+                                case .mlxServer:
+                                    Button {
+                                        // Future activation flow for MLX servers
+                                    } label: {
+                                        Label("Not Supported Yet", systemImage: "ellipsis.circle")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(true)
+                                }
+
+                                Button(role: .destructive) {
+                                    modelRegistry.remove(id: installed.id)
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        if installed.id != modelRegistry.all().last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var availableModelsCard: some View {
         ModelManagerCardView(icon: "server.rack", title: "Available Models", caption: "Ready for RAG queries") {
             VStack(spacing: 12) {
@@ -399,7 +586,55 @@ struct ModelManagerView: View {
         }
     }
     
-    // MARK: - Helper Properties & Methods
+     // MARK: - Helper Properties & Methods
+
+    private func splitOwnerRepo(_ input: String) -> (String, String)? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let comps = trimmed.split(separator: "/").map(String.init)
+        guard comps.count == 2, !comps[0].isEmpty, !comps[1].isEmpty else { return nil }
+        return (comps[0], comps[1])
+    }
+
+    private func formatBytes(_ bytes: Int64?) -> String {
+        guard let bytes = bytes else { return "—" }
+        if bytes < 1024 { return "\(bytes) B" }
+        let kb = Double(bytes) / 1024.0
+        if kb < 1024.0 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024.0
+        if mb < 1024.0 { return String(format: "%.2f MB", mb) }
+        let gb = mb / 1024.0
+        return String(format: "%.2f GB", gb)
+    }
+
+    private func formatBytesDouble(_ bytes: Double) -> String {
+        if bytes < 1024 { return String(format: "%.0f B", bytes) }
+        let kb = bytes / 1024.0
+        if kb < 1024.0 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024.0
+        if mb < 1024.0 { return String(format: "%.2f MB", mb) }
+        let gb = mb / 1024.0
+        return String(format: "%.2f GB", gb)
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        if seconds.isNaN || seconds.isInfinite { return "—" }
+        let s = Int(max(0, seconds))
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        let sec = s % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, sec)
+        } else {
+            return String(format: "%d:%02d", m, sec)
+        }
+    }
+
+    private func downloadSpeedAndETA(for st: DownloadState) -> String {
+        guard let bps = st.averageBytesPerSecond, bps > 0 else { return "Calculating…" }
+        let remaining = max(0, st.totalBytes - st.bytesWritten)
+        let etaSec = bps > 0 ? Double(remaining) / bps : 0
+        return "\(formatBytesDouble(bps))/s • \(formatTime(etaSec))"
+    }
     
     private var executionModeDisplay: String {
         let rawValue = UserDefaults.standard.string(forKey: "executionContext") ?? "automatic"
@@ -464,21 +699,23 @@ struct ModelManagerView: View {
             )
         )
 
-        let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let openAIAvailable = !apiKey.isEmpty
-        let openAINote = openAIAvailable ? "Reasoning models (gpt-5, o1) with ~400K-token context and ~12K completion target." : "Add your OpenAI API key in Settings → OpenAI to enable GPT-5 access."
-        models.append(
-            LLMModel(
-                name: "OpenAI GPT-5 (Reasoning)",
-                modelType: .openAI,
-                parameterCount: "Proprietary (GPT-5)",
-                quantization: "Cloud inference",
-                contextLength: 400_000,
-                contextDescription: "400K-token context window, optimized for long RAG prompts with reasoning traces.",
-                availabilityNote: openAINote,
-                isAvailable: openAIAvailable
+        #if canImport(AppIntents)
+        if #available(iOS 18.1, macOS 15.1, *), deviceCapabilities.supportsAppleIntelligence {
+            let chatGPTNote = deviceCapabilities.appleIntelligenceUnavailableReason ?? "Enable ChatGPT in Settings → Apple Intelligence & Siri to activate system-managed access."
+            models.append(
+                LLMModel(
+                    name: "ChatGPT (Apple Intelligence)",
+                    modelType: .appleChatGPT,
+                    parameterCount: "System-managed",
+                    quantization: "Apple Intelligence service",
+                    contextLength: appleContextTokens,
+                    contextDescription: "System-level ChatGPT with Apple consent prompts and Private Cloud Compute safeguards.",
+                    availabilityNote: chatGPTNote,
+                    isAvailable: deviceCapabilities.supportsAppleIntelligence
+                )
             )
-        )
+        }
+        #endif
 
         let extractiveNote = "Extracts answers directly from retrieved text without generative hallucinations."
         models.append(
@@ -493,6 +730,23 @@ struct ModelManagerView: View {
                 isAvailable: true
             )
         )
+
+        if deviceCapabilities.supportsCoreML {
+            let hasCoreML = modelRegistry.installed.contains { $0.backend == .coreML }
+            let coreMLNote = hasCoreML ? "Custom Core ML packages ready for offline inference." : "Import a .mlpackage via Files to enable custom Core ML models."
+            models.append(
+                LLMModel(
+                    name: "Core ML (Custom Package)",
+                    modelType: .coreMLPackage,
+                    parameterCount: "Varies",
+                    quantization: "Core ML runtime",
+                    contextLength: 8_000,
+                    contextDescription: "Bring your own converted Core ML LLM (.mlpackage).",
+                    availabilityNote: coreMLNote,
+                    isAvailable: hasCoreML
+                )
+            )
+        }
 
         availableModels = models
     }
@@ -742,6 +996,8 @@ private struct ModernModelRow: View {
             return "brain.head.profile"
         case .appleHybrid:
             return "sparkles"
+        case .appleChatGPT:
+            return "bubble.left.and.sparkles"
         case .openAI:
             return "key.fill"
         case .onDeviceAnalysis:
@@ -917,6 +1173,336 @@ private struct InstructionSection: View {
     }
 }
 
+// MARK: - Downloadable Model Row
+
+struct DownloadableModelRow: View {
+    let entry: ModelCatalogEntry
+    let state: DownloadState?
+    let onDownload: () -> Void
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onCancel: () -> Void
+    let formatBytes: (Int64?) -> String
+    let downloadSpeedAndETA: (DownloadState) -> String
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            // Model info header
+            HStack(alignment: .top, spacing: 12) {
+                // Icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(iconBackgroundColor)
+                        .frame(width: 56, height: 56)
+                    
+                    Image(systemName: iconName)
+                        .font(.title2)
+                        .foregroundColor(iconColor)
+                }
+                
+                // Model details
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(entry.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                    
+                    // Metadata badges
+                    HStack(spacing: 8) {
+                        if let vendor = entry.vendor, !vendor.isEmpty {
+                            MetadataBadge(icon: "tag.fill", text: vendor)
+                        }
+                        if let sz = entry.sizeBytes {
+                            MetadataBadge(icon: "externaldrive.fill", text: formatBytes(sz))
+                        }
+                        if let quant = entry.quantization {
+                            MetadataBadge(icon: "cpu", text: quant)
+                        }
+                    }
+                    
+                    // Backend type
+                    HStack(spacing: 4) {
+                        Image(systemName: entry.backend.iconName)
+                            .font(.caption2)
+                        Text(entry.backend.displayName)
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+            }
+            
+            // Large download warning
+            if let sz = entry.sizeBytes, sz > 1_000_000_000 {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Text("Large download (~\(formatBytes(sz)))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(8)
+            }
+            
+            // Download status and controls
+            downloadStatusView
+        }
+        .padding(.vertical, 8)
+    }
+    
+    @ViewBuilder
+    private var downloadStatusView: some View {
+        switch state?.status {
+        case .downloading:
+            VStack(spacing: 8) {
+                // Progress bar
+                ProgressView(value: state?.progress ?? 0.0)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                
+                // Progress details
+                HStack {
+                    Text(String(format: "%.0f%%", (state?.progress ?? 0.0) * 100.0))
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.accentColor)
+                    
+                    Spacer()
+                    
+                    if let st = state {
+                        Text(downloadSpeedAndETA(st))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                // Control buttons
+                HStack(spacing: 10) {
+                    Button(action: onPause) {
+                        Label("Pause", systemImage: "pause.circle.fill")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    
+                    Button(action: onCancel) {
+                        Label("Cancel", systemImage: "xmark.circle.fill")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.red)
+                    
+                    Spacer()
+                }
+            }
+            
+        case .paused:
+            HStack(spacing: 12) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.title3)
+                    .foregroundColor(.orange)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Paused")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.orange)
+                    if let progress = state?.progress {
+                        Text(String(format: "%.0f%% complete", progress * 100.0))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                Button(action: onResume) {
+                    Label("Resume", systemImage: "play.circle.fill")
+                        .font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.red)
+            }
+            .padding(12)
+            .background(Color.orange.opacity(0.1))
+            .cornerRadius(12)
+            
+        case .verifying:
+            HStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.9)
+                Text("Verifying integrity...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(12)
+            .background(DSColors.surface)
+            .cornerRadius(12)
+            
+        case .registering:
+            HStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.9)
+                Text("Installing model...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(12)
+            .background(DSColors.surface)
+            .cornerRadius(12)
+            
+        case .completed:
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.title3)
+                    .foregroundColor(.green)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Installed Successfully")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.green)
+                    Text("Ready to use in Settings")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+            }
+            .padding(12)
+            .background(Color.green.opacity(0.1))
+            .cornerRadius(12)
+            
+        case .failed(let msg):
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(.title3)
+                        .foregroundColor(.red)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Download Failed")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.red)
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+                    
+                    Spacer()
+                }
+                
+                Button(action: onDownload) {
+                    Label("Retry Download", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(12)
+            .background(Color.red.opacity(0.1))
+            .cornerRadius(12)
+            
+        case .cancelled:
+            HStack(spacing: 12) {
+                Image(systemName: "bolt.slash.circle.fill")
+                    .font(.title3)
+                    .foregroundColor(.orange)
+                
+                Text("Download Cancelled")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Button(action: onDownload) {
+                    Label("Download", systemImage: "arrow.down.circle.fill")
+                        .font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(12)
+            .background(DSColors.surface)
+            .cornerRadius(12)
+            
+        default:
+            // Idle - show download button
+            Button(action: onDownload) {
+                HStack {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.title3)
+                    Text("Download Model")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if let sz = entry.sizeBytes {
+                        Text(formatBytes(sz))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+        }
+    }
+    
+    private var iconName: String {
+        switch entry.backend {
+        case .gguf: return "doc.badge.gearshape"
+        case .coreML: return "cpu"
+        case .mlxServer: return "server.rack"
+        }
+    }
+    
+    private var iconColor: Color {
+        if case .completed = state?.status {
+            return .green
+        }
+        return .accentColor
+    }
+    
+    private var iconBackgroundColor: Color {
+        if case .completed = state?.status {
+            return Color.green.opacity(0.15)
+        }
+        return Color.accentColor.opacity(0.15)
+    }
+}
+
+private struct MetadataBadge: View {
+    let icon: String
+    let text: String
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(text)
+                .font(.caption2)
+        }
+        .foregroundColor(.secondary)
+    }
+}
+
 #Preview {
-    ModelManagerView(ragService: RAGService())
+    let service = RAGService()
+    return ModelManagerView(ragService: service)
+        .environmentObject(SettingsStore(ragService: service))
 }

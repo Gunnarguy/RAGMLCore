@@ -64,6 +64,12 @@ struct ModelInfoCard: View {
             return Image(systemName: "key.fill")
         case .mlxLocal:
             return Image(systemName: "server.rack")
+        case .llamaCppLocal:
+            return Image(systemName: "server.rack")
+        case .ollamaLocal:
+            return Image(systemName: "server.rack")
+        case .ggufLocal:
+            return Image(systemName: "doc.badge.gearshape")
         case .coreMLLocal:
             return Image(systemName: "cpu")
         }
@@ -108,6 +114,25 @@ struct ModelInfoCard: View {
             #else
             return false
             #endif
+        case .llamaCppLocal:
+            #if os(macOS)
+            return true
+            #else
+            return false
+            #endif
+        case .ollamaLocal:
+            #if os(macOS)
+            return true
+            #else
+            return false
+            #endif
+        case .ggufLocal:
+            #if os(iOS)
+            // Available when a GGUF model is selected from the registry
+            return (UserDefaults.standard.string(forKey: LlamaCPPiOSLLMService.selectedModelIdKey) ?? "").isEmpty == false
+            #else
+            return false
+            #endif
         case .coreMLLocal:
             // Core ML is available on Apple platforms; actual usability depends on configured model
             return true
@@ -135,6 +160,25 @@ struct ModelInfoCard: View {
             return nil
             #else
             return "Available on macOS only"
+            #endif
+        case .llamaCppLocal:
+            #if os(macOS)
+            return nil
+            #else
+            return "Available on macOS only"
+            #endif
+        case .ollamaLocal:
+            #if os(macOS)
+            return nil
+            #else
+            return "Available on macOS only"
+            #endif
+        case .ggufLocal:
+            #if os(iOS)
+            let configured = (UserDefaults.standard.string(forKey: LlamaCPPiOSLLMService.selectedModelIdKey) ?? "").isEmpty == false
+            return configured ? nil : "Download a model from Model Gallery to enable"
+            #else
+            return "Available on iOS only"
             #endif
         case .coreMLLocal:
             // Could reflect model configuration status in future
@@ -191,6 +235,27 @@ struct ModelInfoCard: View {
                 "OpenAI-compatible HTTP endpoint",
                 "No data leaves device",
                 "Works with popular open models"
+            ]
+        case .llamaCppLocal:
+            return [
+                "Local llama.cpp server on macOS",
+                "OpenAI-compatible HTTP endpoint",
+                "No data leaves device",
+                "Efficient CPU inference for many open models"
+            ]
+        case .ollamaLocal:
+            return [
+                "Ollama local runtime on macOS",
+                "OpenAI-compatible HTTP endpoint",
+                "Pull and run many community models",
+                "No data leaves device by default"
+            ]
+        case .ggufLocal:
+            return [
+                "Run GGUF models fully on-device (iOS)",
+                "Ideal for small models (Gemma/Qwen 2–4B, quantized)",
+                "No network required",
+                "Uses embedded llama.cpp runtime (Metal/ANE) — integration in progress"
             ]
         case .coreMLLocal:
             return [

@@ -11,10 +11,16 @@ import Charts
 
 struct VisualizationsView: View {
     @EnvironmentObject var ragService: RAGService
+    @EnvironmentObject var containerService: ContainerService
     @StateObject private var telemetry = TelemetryCenter.shared
     @State private var selectedVisualization: VisualizationType = .embeddingSpace
     @State private var showingExplanation: Bool = false
     @State private var selectedMetricExplanation: String? = nil
+    let onRequestAddDocuments: (() -> Void)?
+    
+    init(onRequestAddDocuments: (() -> Void)? = nil) {
+        self.onRequestAddDocuments = onRequestAddDocuments
+    }
     
     enum VisualizationType: String, CaseIterable {
         case embeddingSpace = "Embedding Space"
@@ -61,12 +67,30 @@ struct VisualizationsView: View {
         }
     }
     
+    // Active-container scoped documents
+    private var docsForActive: [Document] {
+        let activeId = containerService.activeContainerId
+        let defaultId = containerService.containers.first?.id
+        return ragService.documents.filter { doc in
+            if let cid = doc.containerId {
+                return cid == activeId
+            } else {
+                // Legacy docs (no containerId) belong to the default container (first in list)
+                return activeId == defaultId
+            }
+        }
+    }
+
+    private var chunkCountForActive: Int {
+        docsForActive.reduce(0) { $0 + $1.totalChunks }
+    }
+
     var body: some View {
         ZStack {
             backgroundGradient
             
-            if ragService.documents.isEmpty {
-                EmptyVisualizationsView()
+            if docsForActive.isEmpty {
+                EmptyVisualizationsView(onAddDocuments: onRequestAddDocuments)
             } else {
                 mainContentView
             }
@@ -87,16 +111,20 @@ struct VisualizationsView: View {
     }
     
     private var mainContentView: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                infoBanner
-                
-                if showingExplanation {
-                    explanationCard
+        VStack(spacing: 12) {
+            ContainerPickerStrip(containerService: containerService)
+                .padding(.horizontal)
+            ScrollView {
+                VStack(spacing: 20) {
+                    infoBanner
+                    
+                    if showingExplanation {
+                        explanationCard
+                    }
+                    
+                    visualizationPicker
+                    visualizationContent
                 }
-                
-                visualizationPicker
-                visualizationContent
             }
         }
     }
@@ -209,9 +237,9 @@ struct VisualizationsView: View {
         Group {
             switch selectedVisualization {
             case .embeddingSpace:
-                EmbeddingSpaceView(ragService: ragService)
+                EmbeddingSpaceView(chunkCount: chunkCountForActive, documentCount: docsForActive.count)
             case .chunkDistribution:
-                ChunkDistributionView(ragService: ragService)
+                ChunkDistributionView(documents: docsForActive, chunkCount: chunkCountForActive)
             case .queryAnalytics:
                 QueryAnalyticsView(ragService: ragService)
             case .performanceMetrics:
@@ -234,6 +262,7 @@ struct VisualizationsView: View {
 // MARK: - Empty State
 
 struct EmptyVisualizationsView: View {
+    let onAddDocuments: (() -> Void)?
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
@@ -273,6 +302,18 @@ struct EmptyVisualizationsView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+
+                Button {
+                    onAddDocuments?()
+                } label: {
+                    Label("Add Documents", systemImage: "plus")
+                        .font(.subheadline)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color.accentColor.opacity(0.15))
+                        .foregroundColor(.accentColor)
+                        .clipShape(Capsule())
+                }
             }
             
             Spacer()
@@ -284,7 +325,8 @@ struct EmptyVisualizationsView: View {
 // MARK: - Embedding Space View
 
 struct EmbeddingSpaceView: View {
-    @ObservedObject var ragService: RAGService
+    let chunkCount: Int
+    let documentCount: Int
     @State private var projectionMethod: ProjectionMethod = .pca
     @State private var showingInfo = false
     
@@ -303,7 +345,7 @@ struct EmbeddingSpaceView: View {
                         .font(.title2)
                         .fontWeight(.bold)
                     
-                    Text("\(ragService.totalChunksStored) chunks in 512-dimensional space")
+                    Text("\(chunkCount) chunks in 512-dimensional space")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -320,20 +362,48 @@ struct EmbeddingSpaceView: View {
             .padding(.horizontal)
             
             // Projection method picker
-            Picker("Projection", selection: $projectionMethod) {
-                ForEach(ProjectionMethod.allCases, id: \.self) { method in
-                    Text(method.rawValue).tag(method)
+            HStack {
+                Picker("Projection", selection: $projectionMethod) {
+                    ForEach(ProjectionMethod.allCases, id: \.self) { method in
+                        Text(method.rawValue).tag(method)
+                    }
                 }
+                .pickerStyle(.segmented)
+                
+                InfoButtonView(
+                    title: "Projection Method",
+                    explanation: "High-dimensional embedding vectors (512 dimensions) are 'projected' into 3D space for visualization.\n\n• PCA (Principal Component Analysis): A standard linear method that finds the directions of greatest variance. Fast and deterministic.\n\n• t-SNE & UMAP: Advanced non-linear methods that are excellent at revealing clusters but are slower and can be less deterministic."
+                )
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal)
             
-            // Visualization placeholder (will use Embedding Atlas in future)
-            EmbeddingSpacePlaceholder(
-                projectionMethod: projectionMethod,
-                chunkCount: ragService.totalChunksStored,
-                documentCount: ragService.documents.count
-            )
+            // 3D Embedding visualization (Apple-style scaffold)
+            EmbeddingSpaceRenderer(projectionMethod: projectionMethod)
+                .padding(.horizontal)
+            
+            // Stats cards
+            HStack(spacing: 12) {
+                StatCard(
+                    icon: "cube.box",
+                    label: "Chunks",
+                    value: "\(chunkCount)",
+                    color: .blue
+                )
+                
+                StatCard(
+                    icon: "doc.text",
+                    label: "Documents",
+                    value: "\(documentCount)",
+                    color: .green
+                )
+                
+                StatCard(
+                    icon: "ruler",
+                    label: "Dimensions",
+                    value: "512",
+                    color: .purple
+                )
+            }
             .padding(.horizontal)
         }
         .sheet(isPresented: $showingInfo) {
@@ -435,10 +505,11 @@ struct EmbeddingSpacePlaceholder: View {
 // MARK: - Chunk Distribution View
 
 struct ChunkDistributionView: View {
-    @ObservedObject var ragService: RAGService
+    let documents: [Document]
+    let chunkCount: Int
     
     var chunkSizeData: [(document: String, avgSize: Double)] {
-        ragService.documents.map { doc in
+        documents.map { doc in
             let avgSize = doc.processingMetadata?.chunkStats.averageChars ?? 0
             return (doc.filename, Double(avgSize))
         }
@@ -468,7 +539,7 @@ struct ChunkDistributionView: View {
                         )
                     }
                 }
-                .frame(height: CGFloat(ragService.documents.count * 50))
+                .frame(height: CGFloat(documents.count * 50))
                 .padding()
                 .background(
                     RoundedRectangle(cornerRadius: 16)
@@ -483,21 +554,21 @@ struct ChunkDistributionView: View {
                 StatCard(
                     icon: "doc.text",
                     label: "Total Docs",
-                    value: "\(ragService.documents.count)",
+                    value: "\(documents.count)",
                     color: .blue
                 )
                 
                 StatCard(
                     icon: "cube.box",
                     label: "Total Chunks",
-                    value: "\(ragService.totalChunksStored)",
+                    value: "\(chunkCount)",
                     color: .green
                 )
                 
                 StatCard(
                     icon: "chart.bar",
                     label: "Avg per Doc",
-                    value: "\(ragService.documents.isEmpty ? 0 : ragService.totalChunksStored / ragService.documents.count)",
+                    value: "\(documents.isEmpty ? 0 : chunkCount / documents.count)",
                     color: .purple
                 )
                 
@@ -513,8 +584,8 @@ struct ChunkDistributionView: View {
     }
     
     private var averageChunkSize: Int {
-        let totalSize = ragService.documents.compactMap { $0.processingMetadata?.chunkStats.averageChars }.reduce(0, +)
-        return ragService.documents.isEmpty ? 0 : totalSize / ragService.documents.count
+        let totalSize = documents.compactMap { $0.processingMetadata?.chunkStats.averageChars }.reduce(0, +)
+        return documents.isEmpty ? 0 : totalSize / documents.count
     }
 }
 
@@ -1741,5 +1812,6 @@ struct ClusterPreviewCard: View {
     NavigationView {
         VisualizationsView()
             .environmentObject(RAGService())
+            .environmentObject(ContainerService())
     }
 }

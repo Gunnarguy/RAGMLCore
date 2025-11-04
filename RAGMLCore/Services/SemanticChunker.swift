@@ -8,8 +8,86 @@
 import Foundation
 import NaturalLanguage
 
+// Notification name for SemanticChunker diagnostics updates
+extension Notification.Name {
+    static let semanticChunkerDiagnosticsUpdated = Notification.Name("SemanticChunkerDiagnosticsUpdated")
+}
+
 /// Enhanced chunking with semantic boundaries and metadata
 class SemanticChunker {
+    
+    // MARK: - Diagnostics
+    
+    struct ChunkingDiagnostics {
+        let language: NLLanguage?
+        let languageHypotheses: [NLLanguage: Double]
+        let sectionCount: Int
+        let topicBoundaryCount: Int
+        let totalSentences: Int
+        let averageSentenceLengthWords: Double
+        let averageWordsPerChunk: Double
+        let overlapWords: Int
+        let warnings: [String]
+    }
+    
+    private let languageRecognizer = NLLanguageRecognizer()
+    private(set) var lastDiagnostics: ChunkingDiagnostics?
+    
+    func diagnostics() -> ChunkingDiagnostics? { lastDiagnostics }
+    
+    // Notification posted when diagnostics are updated (see global Notification.Name extension)
+    
+    // MARK: - Token/Language helpers
+    
+    private func tokenWordCount(_ text: String) -> Int {
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        var count = 0
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { _, _ in
+            count += 1
+            return true
+        }
+        return count
+    }
+    
+    private func estimateSentenceCount(for text: String) -> Int {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var count = 0
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { _, _ in
+            count += 1
+            return true
+        }
+        return count
+    }
+    
+    private func averageSentenceLength(for text: String) -> Double {
+        let sentenceTokenizer = NLTokenizer(unit: .sentence)
+        sentenceTokenizer.string = text
+        var totalWords = 0
+        var sentenceCount = 0
+        
+        sentenceTokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let sentence = String(text[range])
+            totalWords += tokenWordCount(sentence)
+            sentenceCount += 1
+            return true
+        }
+        guard sentenceCount > 0 else { return 0.0 }
+        return Double(totalWords) / Double(sentenceCount)
+    }
+    
+    private func detectLanguage(for text: String) -> NLLanguage? {
+        languageRecognizer.reset()
+        languageRecognizer.processString(text)
+        return languageRecognizer.dominantLanguage
+    }
+    
+    private func languageHypotheses(for text: String) -> [NLLanguage: Double] {
+        languageRecognizer.reset()
+        languageRecognizer.processString(text)
+        return languageRecognizer.languageHypotheses(withMaximum: 3)
+    }
     
     struct ChunkingConfig {
         var targetSize: Int = 400  // Target words per chunk
@@ -52,10 +130,24 @@ class SemanticChunker {
         print("   🔄 Overlap: \(config.overlap)w")
         
         // Safety check: if text is too small, just return one chunk
-        let wordCount = text.split(separator: " ").count
+        let wordCount = tokenWordCount(text)
         if wordCount < config.minSize {
             print("   ⚠️  Text too small (\(wordCount) words), creating single chunk")
-            return [createSingleChunk(text, documentId: documentId, pageNumbers: pageNumbers)]
+            let small = createSingleChunk(text, documentId: documentId, pageNumbers: pageNumbers)
+            // Update diagnostics for tiny docs
+            self.lastDiagnostics = ChunkingDiagnostics(
+                language: detectLanguage(for: text),
+                languageHypotheses: languageHypotheses(for: text),
+                sectionCount: 0,
+                topicBoundaryCount: 0,
+                totalSentences: estimateSentenceCount(for: text),
+                averageSentenceLengthWords: averageSentenceLength(for: text),
+                averageWordsPerChunk: Double(small.metadata.wordCount),
+                overlapWords: config.overlap,
+                warnings: ["Small document: produced single chunk"]
+            )
+            NotificationCenter.default.post(name: .semanticChunkerDiagnosticsUpdated, object: self.lastDiagnostics)
+            return [small]
         }
         
         // 1. Detect sections and structure
@@ -81,7 +173,7 @@ class SemanticChunker {
                 // Less than 10 characters remaining - create final micro-chunk if needed
                 if remainingDistance > 0 {
                     let finalText = String(text[currentPosition..<text.endIndex])
-                    let wordCount = finalText.split(separator: " ").count
+                    let wordCount = tokenWordCount(finalText)
                     if wordCount > 0 {
                         print("      ✓ Final chunk \(chunkIndex + 1): \(wordCount) words")
                         let metadata = extractMetadata(
@@ -118,7 +210,7 @@ class SemanticChunker {
             }
             
             let chunkText = String(text[chunkRange])
-            print("      ✓ Chunk \(chunkIndex + 1): \(chunkText.split(separator: " ").count) words")
+            print("      ✓ Chunk \(chunkIndex + 1): \(tokenWordCount(chunkText)) words")
             
             // Extract metadata
             let metadata = extractMetadata(
@@ -157,6 +249,24 @@ class SemanticChunker {
         
         print("   ✅ Created \(chunks.count) semantically-aware chunks")
         printChunkStatistics(chunks)
+        
+        // Update diagnostics for UI/telemetry
+        let avgWordsPerChunk = chunks.isEmpty
+            ? 0.0
+            : Double(chunks.map { $0.metadata.wordCount }.reduce(0, +)) / Double(chunks.count)
+        
+        self.lastDiagnostics = ChunkingDiagnostics(
+            language: detectLanguage(for: text),
+            languageHypotheses: languageHypotheses(for: text),
+            sectionCount: sections.count,
+            topicBoundaryCount: topicBoundaries.count,
+            totalSentences: estimateSentenceCount(for: text),
+            averageSentenceLengthWords: averageSentenceLength(for: text),
+            averageWordsPerChunk: avgWordsPerChunk,
+            overlapWords: config.overlap,
+            warnings: []
+        )
+        NotificationCenter.default.post(name: .semanticChunkerDiagnosticsUpdated, object: self.lastDiagnostics)
         
         return chunks
     }
@@ -311,7 +421,7 @@ class SemanticChunker {
         sections: [(title: String, range: Range<String.Index>)],
         pageNumbers: [Int: Range<String.Index>]?
     ) -> EnhancedChunk.ChunkMetadata {
-        let wordCount = chunkText.split(separator: " ").count
+        let wordCount = tokenWordCount(chunkText)
         let keywords = extractKeywords(chunkText, topN: 5)
         
         // Find section title
@@ -345,22 +455,31 @@ class SemanticChunker {
     
     /// Extract top keywords using TF-IDF approximation
     private func extractKeywords(_ text: String, topN: Int) -> [String] {
-        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        // Prefer lemma-based counting to normalize inflections
+        let tagger = NLTagger(tagSchemes: [.lemma, .lexicalClass, .language])
         tagger.string = text
         
-        var wordCounts: [String: Int] = [:]
+        var counts: [String: Int] = [:]
         
-        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass) { tag, range in
-            if tag == .noun || tag == .verb {
-                let word = String(text[range]).lowercased()
-                if word.count > 3 {  // Filter short words
-                    wordCounts[word, default: 0] += 1
-                }
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex,
+                             unit: .word,
+                             scheme: .lemma,
+                             options: [.omitPunctuation, .omitWhitespace, .joinNames]) { lemmaTag, range in
+            // Determine POS for filtering
+            let pos = tagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass).0
+            guard pos == .noun || pos == .verb || pos == .adjective else {
+                return true
+            }
+            
+            let token = String(text[range]).lowercased()
+            let lemma = lemmaTag?.rawValue.lowercased() ?? token
+            if lemma.count > 2 {
+                counts[lemma, default: 0] += 1
             }
             return true
         }
         
-        return wordCounts.sorted { $0.value > $1.value }
+        return counts.sorted { $0.value > $1.value }
             .prefix(topN)
             .map { $0.key }
     }
@@ -406,7 +525,7 @@ class SemanticChunker {
         documentId: UUID,
         pageNumbers: [Int: Range<String.Index>]? = nil
     ) -> EnhancedChunk {
-        let wordCount = text.split(separator: " ").count
+        let wordCount = tokenWordCount(text)
         
         // Extract basic metadata
         let keywords = extractKeywords(text, topN: 5)

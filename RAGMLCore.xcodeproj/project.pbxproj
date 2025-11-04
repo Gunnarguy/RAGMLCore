@@ -98,11 +98,22 @@
 			productRefGroup = B0D565DF2E98AC50001274A2 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+			);
 			targets = (
 				B0D565DD2E98AC50001274A2 /* RAGMLCore */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXBuildFile section */
+/* End PBXBuildFile section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B0D565DC2E98AC50001274A2 /* Resources */ = {

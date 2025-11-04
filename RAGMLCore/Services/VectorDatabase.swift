@@ -27,11 +27,17 @@ protocol VectorDatabase {
     
     /// Get total count of stored chunks
     func count() async throws -> Int
+    
+    /// Enumerate all chunks (used for analytics/visualization)
+    /// Implementations should be efficient and may downsample internally if needed.
+    func allChunks() async throws -> [DocumentChunk]
 }
 
 /// In-memory vector database implementation with performance optimizations
 /// For production scale, consider VecturaKit, ObjectBox, or SVDB for persistent storage and HNSW indexing
 class InMemoryVectorDatabase: VectorDatabase {
+    
+    private let embeddingDim: Int
     
     // MARK: - Storage
     
@@ -45,6 +51,12 @@ class InMemoryVectorDatabase: VectorDatabase {
     
     // PERFORMANCE: Pre-computed embedding norms for faster search
     private var embeddingNorms: [UUID: Float] = [:]
+    
+    // MARK: - Initialization
+    
+    init(dimension: Int = 512) {
+        self.embeddingDim = dimension
+    }
     
     // MARK: - VectorDatabase Protocol
     
@@ -63,8 +75,8 @@ class InMemoryVectorDatabase: VectorDatabase {
         
         // Validate embeddings before storing
         for (index, chunk) in chunks.enumerated() {
-            guard chunk.embedding.count == 512 else {
-                print("❌ [VectorDatabase] Invalid embedding dimension at index \(index): \(chunk.embedding.count)")
+            guard chunk.embedding.count == embeddingDim else {
+                print("❌ [VectorDatabase] Invalid embedding dimension at index \(index): \(chunk.embedding.count) (expected \(embeddingDim))")
                 throw VectorDatabaseError.invalidEmbedding
             }
         }
@@ -104,8 +116,8 @@ class InMemoryVectorDatabase: VectorDatabase {
         }
         
         // Validate query embedding
-        guard embedding.count == 512 else {
-            print("❌ [VectorDatabase] Invalid query embedding dimension: \(embedding.count)")
+        guard embedding.count == embeddingDim else {
+            print("❌ [VectorDatabase] Invalid query embedding dimension: \(embedding.count) (expected \(embeddingDim))")
             throw VectorDatabaseError.invalidEmbedding
         }
         
@@ -184,6 +196,14 @@ class InMemoryVectorDatabase: VectorDatabase {
         return await withCheckedContinuation { continuation in
             queue.async {
                 continuation.resume(returning: self.chunks.count)
+            }
+        }
+    }
+    
+    func allChunks() async throws -> [DocumentChunk] {
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: Array(self.chunks.values))
             }
         }
     }
@@ -364,6 +384,7 @@ class PersistentVectorDatabase: VectorDatabase {
     private let queue = DispatchQueue(label: "com.ragmlcore.persistentdb", attributes: .concurrent)
     private let fileManager = FileManager.default
     private let storageURL: URL
+    private let embeddingDim: Int
     
     // MARK: - Initialization
     
@@ -376,9 +397,20 @@ class PersistentVectorDatabase: VectorDatabase {
         try? fileManager.createDirectory(at: appDirectory, withIntermediateDirectories: true)
         
         self.storageURL = appDirectory.appendingPathComponent("vector_database.json")
+        self.embeddingDim = 512
         
         print("💾 [PersistentVectorDatabase] Storage location: \(storageURL.path)")
         
+        // Load existing data
+        loadFromDisk()
+    }
+    
+    // MARK: - Initialization (Designated)
+    
+    init(storageURL: URL, dimension: Int) {
+        self.storageURL = storageURL
+        self.embeddingDim = dimension
+        print("💾 [PersistentVectorDatabase] Storage location: \(storageURL.path) (dim=\(dimension))")
         // Load existing data
         loadFromDisk()
     }
@@ -445,7 +477,7 @@ class PersistentVectorDatabase: VectorDatabase {
         
         // Validate embeddings before storing
         for (index, chunk) in chunks.enumerated() {
-            guard chunk.embedding.count == 512 else {
+            guard chunk.embedding.count == embeddingDim else {
                 print("❌ [PersistentVectorDatabase] Invalid embedding dimension at index \(index): \(chunk.embedding.count)")
                 throw VectorDatabaseError.invalidEmbedding
             }
@@ -471,7 +503,7 @@ class PersistentVectorDatabase: VectorDatabase {
         let startTime = Date()
         
         // Validate query embedding
-        guard embedding.count == 512 else {
+        guard embedding.count == embeddingDim else {
             print("❌ [PersistentVectorDatabase] Invalid query embedding dimension: \(embedding.count)")
             throw VectorDatabaseError.invalidQueryEmbedding
         }
@@ -543,6 +575,14 @@ class PersistentVectorDatabase: VectorDatabase {
         return await withCheckedContinuation { continuation in
             queue.async {
                 continuation.resume(returning: self.chunks.count)
+            }
+        }
+    }
+    
+    func allChunks() async throws -> [DocumentChunk] {
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: Array(self.chunks.values))
             }
         }
     }

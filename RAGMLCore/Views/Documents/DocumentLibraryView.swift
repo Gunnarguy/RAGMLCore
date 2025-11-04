@@ -10,9 +10,35 @@ import UniformTypeIdentifiers
 
 struct DocumentLibraryView: View {
     @ObservedObject var ragService: RAGService
+    @ObservedObject var containerService: ContainerService
     @State private var showingFilePicker = false
     @State private var showingProcessingSummary = false
     @State private var lastProcessedSummary: ProcessingSummary?
+    @State private var showingContainerSettings = false
+    let onViewVisualizations: (() -> Void)?
+
+    init(ragService: RAGService, containerService: ContainerService, onViewVisualizations: (() -> Void)? = nil) {
+        self._ragService = ObservedObject(wrappedValue: ragService)
+        self._containerService = ObservedObject(wrappedValue: containerService)
+        self.onViewVisualizations = onViewVisualizations
+    }
+    
+    private var filteredDocuments: [Document] {
+        let activeId = containerService.activeContainerId
+        let defaultId = containerService.containers.first?.id
+        return ragService.documents.filter { doc in
+            if let cid = doc.containerId {
+                return cid == activeId
+            } else {
+                // Legacy docs without containerId appear only in the default container
+                return activeId == defaultId
+            }
+        }
+    }
+    
+    private var filteredTotalChunks: Int {
+        filteredDocuments.reduce(0) { $0 + $1.totalChunks }
+    }
     
     var body: some View {
         ZStack {
@@ -27,14 +53,21 @@ struct DocumentLibraryView: View {
             )
             .ignoresSafeArea()
             
-            if ragService.documents.isEmpty {
+            if filteredDocuments.isEmpty {
                 // Modern empty state
-                EmptyDocumentsView()
+                VStack(spacing: 12) {
+                    ContainerPickerStrip(containerService: containerService)
+                        .padding(.horizontal)
+                    EmptyDocumentsView()
+                }
             } else {
-                // Document list with modern styling
-                ScrollView {
+                VStack(spacing: 12) {
+                    ContainerPickerStrip(containerService: containerService)
+                        .padding(.horizontal)
+                    // Document list with modern styling
+                    ScrollView {
                     LazyVStack(spacing: 12) {
-                        ForEach(ragService.documents) { document in
+                        ForEach(filteredDocuments) { document in
                             NavigationLink(destination: DocumentDetailsView(document: document)) {
                                 ModernDocumentCard(document: document, ragService: ragService)
                             }
@@ -44,15 +77,16 @@ struct DocumentLibraryView: View {
                     .padding()
                     
                     // Stats footer
-                    StatsFooter(totalChunks: ragService.totalChunksStored)
+                    StatsFooter(totalChunks: filteredTotalChunks)
                         .padding(.horizontal)
                         .padding(.bottom, 20)
+                }
                 }
             }
         }
         .navigationTitle("Documents")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         #endif
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -60,6 +94,24 @@ struct DocumentLibraryView: View {
                     Label("Add Document", systemImage: "plus")
                 }
                 .disabled(ragService.isProcessing)
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showingContainerSettings = true
+                } label: {
+                    Label("Manage Library", systemImage: "gearshape")
+                }
+            }
+            
+            if filteredDocuments.count > 0 {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        onViewVisualizations?()
+                    } label: {
+                        Label("Visualize", systemImage: "cube.transparent")
+                    }
+                }
             }
             
             if !ragService.documents.isEmpty {
@@ -94,6 +146,9 @@ struct DocumentLibraryView: View {
             if ragService.isProcessing {
                 ProcessingOverlay(status: ragService.processingStatus)
             }
+        }
+        .sheet(isPresented: $showingContainerSettings) {
+            ContainerSettingsSheet(containerService: containerService)
         }
         .sheet(isPresented: Binding(
             get: { ragService.lastProcessingSummary != nil },
@@ -309,6 +364,151 @@ struct DocumentFeatureRow: View {
                 Text(description)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
+struct ContainerPickerStrip: View {
+    @ObservedObject var containerService: ContainerService
+    
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(containerService.containers, id: \.id) { c in
+                    let isActive = c.id == containerService.activeContainerId
+                    Button(action: { containerService.setActive(c.id) }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: c.icon)
+                            Text(c.name)
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(isActive ? Color.accentColor.opacity(0.2) : DSColors.surface)
+                        .foregroundColor(isActive ? .accentColor : .primary)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                Button {
+                    let new = containerService.createContainer(name: "Library \(containerService.containers.count + 1)")
+                    containerService.setActive(new.id)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                        Text("New Library")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(DSColors.surface)
+                    .foregroundColor(.primary)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+struct ContainerSettingsSheet: View {
+    @ObservedObject var containerService: ContainerService
+    @Environment(\.dismiss) var dismiss
+    @State private var name: String = ""
+    @State private var icon: String = "folder.fill"
+    @State private var colorHex: String = "#4F46E5"
+    @State private var providerId: String = "nl_embedding"
+    @State private var dim: Int = 512
+    @State private var dbKind: VectorDBKind = .persistentJSON
+    @State private var strictMode: Bool = true
+    
+    private var activeContainer: KnowledgeContainer? {
+        containerService.containers.first(where: { $0.id == containerService.activeContainerId })
+    }
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Library")) {
+                    TextField("Name", text: $name)
+                    TextField("Icon (SF Symbol)", text: $icon)
+                    TextField("Color Hex", text: $colorHex)
+                    HStack {
+                        Toggle("Strict Mode (medical-grade)", isOn: $strictMode)
+                        InfoButtonView(
+                            title: "Strict Mode",
+                            explanation: "When enabled, this library requires a higher standard of evidence before answering.\n\n• Similarity Threshold: Retrieved chunks must be at least 52% similar to your query.\n\n• Supporting Chunks: At least 3 high-confidence chunks are required.\n\nIf these conditions aren't met, the model will state that it cannot answer reliably, preventing responses based on low-quality or insufficient information. Ideal for medical or technical libraries where accuracy is critical."
+                        )
+                    }
+                }
+                
+                Section(header: Text("Embeddings")) {
+                    TextField("Provider ID", text: $providerId)
+                    Picker("Dimensions", selection: $dim) {
+                        Text("384").tag(384)
+                        Text("512").tag(512)
+                        Text("768").tag(768)
+                        Text("1024").tag(1024)
+                    }
+                    Text("Changing dimensions requires re-embedding.").font(.caption).foregroundColor(.secondary)
+                }
+                
+                Section(header: Text("Vector Database")) {
+                    Picker("Engine", selection: $dbKind) {
+                        ForEach(VectorDBKind.allCases, id: \.self) { kind in
+                            Text(kind.rawValue).tag(kind)
+                        }
+                    }
+                    Text("Vectura HNSW requires VecturaKit at build time; otherwise falls back to JSON.").font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Library Settings")
+            .iOSNavigationBarInline()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if var c = activeContainer {
+                            c.name = name
+                            c.icon = icon
+                            c.colorHex = colorHex
+                            let prevDim = c.embeddingDim
+                            let prevDB = c.vectorDBKind
+                            c.embeddingProviderId = providerId
+                            c.embeddingDim = dim
+                            c.vectorDBKind = dbKind
+                            c.strictMode = strictMode
+                            containerService.updateContainer(c)
+                            // If engine changed, router will re-create lazily next access.
+                            // If dimension changed, a re-embed workflow should be offered.
+                            // For now, show a console hint.
+                            if prevDim != dim {
+                                print("ℹ️ Container \(c.name) embedding dimension changed from \(prevDim) to \(dim). Re-embedding required for best results.")
+                            }
+                            if prevDB != dbKind {
+                                print("ℹ️ Container \(c.name) vector DB changed to \(dbKind). New index will be used on next retrieval.")
+                            }
+                        }
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                if let c = activeContainer {
+                    name = c.name
+                    icon = c.icon
+                    colorHex = c.colorHex
+                    providerId = c.embeddingProviderId
+                    dim = c.embeddingDim
+                    dbKind = c.vectorDBKind
+                    strictMode = c.strictMode
+                }
             }
         }
     }
@@ -635,9 +835,7 @@ struct ProcessingSummaryView: View {
                 .padding()
             }
             .navigationTitle("Processing Complete")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .iOSNavigationBarInline()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
@@ -646,6 +844,16 @@ struct ProcessingSummaryView: View {
                 }
             }
         }
+    }
+}
+
+extension View {
+    @ViewBuilder func iOSNavigationBarInline() -> some View {
+        #if os(iOS)
+        self.navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
     }
 }
 
@@ -1331,5 +1539,5 @@ private struct TechnicalRow: View {
 }
 
 #Preview {
-    DocumentLibraryView(ragService: RAGService())
+    DocumentLibraryView(ragService: RAGService(), containerService: ContainerService())
 }

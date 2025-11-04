@@ -50,6 +50,26 @@ protocol RAGToolHandler {
     func getDocumentSummary(documentName: String) async throws -> String
 }
 
+// MARK: - Streaming Bridge
+
+struct LLMStreamEvent: Sendable {
+    let text: String
+    let isFinal: Bool
+}
+
+typealias LLMStreamHandler = @Sendable (LLMStreamEvent) async -> Void
+
+enum LLMStreamingContext {
+    @TaskLocal static var handler: LLMStreamHandler?
+    
+    static func emit(text: String, isFinal: Bool) {
+        guard let handler = handler else { return }
+        Task {
+            await handler(LLMStreamEvent(text: text, isFinal: isFinal))
+        }
+    }
+}
+
 // MARK: - Tool Protocol Implementations for Function Calling
 
 #if canImport(FoundationModels)
@@ -67,13 +87,22 @@ struct SearchDocumentsTool: Tool {
     struct Arguments {
         @Guide(description: "The search query to find relevant document chunks. Be specific and use keywords from the user's question.")
         var query: String
+        @Guide(description: "Optional maximum number of chunks to retrieve. Use 2–4 for brief summaries, 8–12 for deep dives.")
+        var topK: Int?
+        @Guide(description: "Optional minimum semantic similarity threshold (0.0–1.0). Use 0.35 by default; increase to filter noise.")
+        var minSimilarity: Float?
     }
     
     func call(arguments: Arguments) async throws -> String {
         guard let ragService = ragService else {
             return "Error: Document search service unavailable"
         }
-        return try await ragService.searchDocuments(query: arguments.query)
+        await ToolCallCounter.shared.increment()
+        return try await ragService.searchDocuments(
+            query: arguments.query,
+            topK: arguments.topK,
+            minSimilarity: arguments.minSimilarity
+        )
     }
 }
 
@@ -94,6 +123,7 @@ struct ListDocumentsTool: Tool {
         guard let ragService = ragService else {
             return "Error: Document service unavailable"
         }
+        await ToolCallCounter.shared.increment()
         return try await ragService.listDocuments()
     }
 }
@@ -116,6 +146,7 @@ struct GetDocumentSummaryTool: Tool {
         guard let ragService = ragService else {
             return "Error: Document service unavailable"
         }
+        await ToolCallCounter.shared.increment()
         return try await ragService.getDocumentSummary(documentName: arguments.documentName)
     }
 }
@@ -334,6 +365,10 @@ class AppleFoundationLLMService: LLMService {
                     - Answer questions to the best of your ability
                     
                     Always decide intelligently whether to use tools or answer directly.
+                    When calling search_documents, choose parameters based on the task:
+                    • Brief summaries: topK 2–4
+                    • Deep dives/comparisons: topK 8–12
+                    • Raise minSimilarity above 0.35 when results seem noisy (default 0.35).
                     Be conversational and cite sources when using document information.
                     """)
             )
@@ -372,6 +407,16 @@ class AppleFoundationLLMService: LLMService {
         }
         
         let startTime = Date()
+        TelemetryCenter.emit(
+            .generation,
+            title: "Apple FM: Generation started",
+            metadata: [
+                "temperature": "\(config.temperature)",
+                "maxTokens": "\(config.maxTokens)",
+                "pccAllowed": "\(config.allowPrivateCloudCompute)",
+                "execPref": "\(config.executionContext)"
+            ]
+        )
         
         print("\n╔══════════════════════════════════════════════════════════════╗")
         print("║ APPLE FOUNDATION MODEL GENERATION                            ║")
@@ -504,6 +549,7 @@ class AppleFoundationLLMService: LLMService {
         print("📡 Waiting for response snapshots...\n")
         
         var snapshotCount = 0
+        var forcedLocalFallback = false
         
         for try await snapshot in responseStream {
             snapshotCount += 1
@@ -555,6 +601,23 @@ class AppleFoundationLLMService: LLMService {
                         print("      • ~\(String(format: "%.1f", ttft - 0.3))s network overhead")
                     }
                     print("╚══════════════════════════════════════════════════════════════╝\n")
+                    
+                    // Enforce execution preferences: if PCC is blocked, fall back to on-device analysis
+                    if (config.executionContext == .onDeviceOnly || !config.allowPrivateCloudCompute) && actualExecutionLocation.contains("Private Cloud Compute") {
+                        print("🚫 PCC blocked by settings. Aborting FM stream and falling back to On‑Device Analysis.")
+                        TelemetryCenter.emit(
+                            .system,
+                            severity: .warning,
+                            title: "PCC blocked by settings",
+                            metadata: [
+                                "ttft": String(format: "%.2f", ttft),
+                                "execDetected": actualExecutionLocation
+                            ]
+                        )
+                        forcedLocalFallback = true
+                        LLMStreamingContext.emit(text: "", isFinal: true)
+                        break
+                    }
                 }
             }
             
@@ -580,6 +643,36 @@ class AppleFoundationLLMService: LLMService {
             print("   Full content so far:")
             print("   \"\(responseText)\"")
             print("   ---")
+
+            if newChars > 0 {
+                let chunk = String(responseText.suffix(newChars))
+                LLMStreamingContext.emit(text: chunk, isFinal: false)
+            }
+        }
+        
+        // If PCC was blocked and we aborted the FM stream, fall back to On-Device Analysis now
+        if forcedLocalFallback {
+            let local = OnDeviceAnalysisService()
+            let fallback = try await local.generate(prompt: prompt, context: context, config: config)
+            let totalTime = Date().timeIntervalSince(startTime)
+            TelemetryCenter.emit(
+                .generation,
+                title: "On-Device Analysis (fallback) complete",
+                metadata: [
+                    "tokens": "\(fallback.tokensGenerated)",
+                    "totalTime": String(format: "%.2f", totalTime)
+                ],
+                duration: totalTime
+            )
+            LLMStreamingContext.emit(text: fallback.text, isFinal: true)
+            return LLMResponse(
+                text: fallback.text,
+                tokensGenerated: fallback.tokensGenerated,
+                timeToFirstToken: fallback.timeToFirstToken,
+                totalTime: totalTime,
+                modelName: local.modelName,
+                toolCallsMade: 0
+            )
         }
         
         print("\n📊 Stream Statistics:")
@@ -658,13 +751,25 @@ class AppleFoundationLLMService: LLMService {
             executionBasedModelName = modelName
         }
         
+        TelemetryCenter.emit(
+            .generation,
+            title: "Apple FM: Generation complete",
+            metadata: [
+                "ttft": firstTokenTime != nil ? String(format: "%.2f", firstTokenTime!) : "n/a",
+                "totalTime": String(format: "%.2f", totalTime),
+                "exec": executionBasedModelName,
+                "tokens": "\(finalTokenCount)"
+            ],
+            duration: totalTime
+        )
+        LLMStreamingContext.emit(text: "", isFinal: true)
         return LLMResponse(
             text: responseText,
             tokensGenerated: finalTokenCount,
             timeToFirstToken: firstTokenTime,
             totalTime: totalTime,
             modelName: executionBasedModelName,
-            toolCallsMade: 0  // TODO: Implement tool calling detection
+            toolCallsMade: ToolCallCounter.shared.takeAndReset()
         )
     }
 }
@@ -715,6 +820,8 @@ class OnDeviceAnalysisService: LLMService {
         
         let totalTime = Date().timeIntervalSince(startTime)
         let tokensGenerated = responseText.split(separator: " ").count
+
+        LLMStreamingContext.emit(text: responseText, isFinal: true)
         
         return LLMResponse(
             text: responseText,
@@ -1144,6 +1251,8 @@ class AppleChatGPTExtensionService: LLMService {
         
         let totalTime = Date().timeIntervalSince(startTime)
         let tokensGenerated = response.split(separator: " ").count
+
+        LLMStreamingContext.emit(text: response, isFinal: true)
         
         return LLMResponse(
             text: response,
@@ -1269,100 +1378,172 @@ class AppleChatGPTExtensionService: LLMService {
 import CoreML
 
 class CoreMLLLMService: LLMService {
-    
+
+    // MARK: - Persistence Keys
+
+    static let selectedModelIdKey = "selectedCoreMLModelId"
+    static let selectedModelPathKey = "selectedCoreMLModelPath"
+
+    // MARK: - Properties
+
+    private let modelURL: URL
+    private let modelId: UUID?
+    private let installedModel: InstalledModel?
     private var model: MLModel?
     private let _modelName: String
-    
+
     var toolHandler: RAGToolHandler?  // Not used by Core ML models
-    
+
     var isAvailable: Bool {
-        return model != nil
+        FileManager.default.fileExists(atPath: modelURL.path) && model != nil
     }
-    
+
     var modelName: String {
-        return _modelName
+        _modelName
     }
-    
-    init(modelURL: URL) {
-        self._modelName = modelURL.deletingPathExtension().lastPathComponent
-        
-        do {
-            // Load Core ML model package
-            let configuration = MLModelConfiguration()
-            configuration.computeUnits = .all // Use CPU, GPU, and Neural Engine
-            
-            self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
-            
-            print("✓ Successfully loaded Core ML model: \(_modelName)")
-        } catch {
-            print("✗ Failed to load Core ML model: \(error.localizedDescription)")
-            self.model = nil
+
+    // MARK: - Initialization
+
+    init(modelURL: URL, modelId: UUID? = nil, installedModel: InstalledModel? = nil) {
+        self.modelURL = modelURL
+        self.modelId = modelId
+        self.installedModel = installedModel
+        if let installedModel {
+            self._modelName = "Core ML • \(installedModel.name)"
+        } else {
+            self._modelName = "Core ML • \(modelURL.deletingPathExtension().lastPathComponent)"
+        }
+        self.model = CoreMLLLMService.loadModel(at: modelURL)
+        if let installedModel {
+            let shortId = String(installedModel.id.uuidString.prefix(8))
+            Log.info("✓ Configured Core ML model: \(installedModel.name) [id=\(shortId)]", category: .llm)
         }
     }
-    
+
+    private static func loadModel(at url: URL) -> MLModel? {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            Log.error("✗ Core ML model file missing: \(url.lastPathComponent)", category: .llm)
+            return nil
+        }
+
+        do {
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .all // CPU + GPU + Neural Engine
+            let loaded = try MLModel(contentsOf: url, configuration: configuration)
+            print("✓ Successfully loaded Core ML model: \(url.lastPathComponent)")
+            return loaded
+        } catch {
+            Log.error("✗ Failed to load Core ML model: \(error.localizedDescription)", category: .llm)
+            return nil
+        }
+    }
+
+    // MARK: - Selection Persistence
+
+    static func saveSelection(modelId: UUID, modelURL: URL) {
+        let defaults = UserDefaults.standard
+        defaults.set(modelId.uuidString, forKey: selectedModelIdKey)
+        defaults.set(modelURL.path, forKey: selectedModelPathKey)
+        let shortId = String(modelId.uuidString.prefix(8))
+        Log.info("💾 Saved Core ML selection [id=\(shortId)]", category: .llm)
+    }
+
+    @MainActor
+    private static func resolveRegistrySelection() -> (UUID, InstalledModel, URL)? {
+        let defaults = UserDefaults.standard
+        guard let idString = defaults.string(forKey: selectedModelIdKey),
+              let id = UUID(uuidString: idString),
+              let model = ModelRegistry.shared.model(id: id),
+              model.backend == .coreML,
+              let url = model.localURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        return (id, model, url)
+    }
+
+    static func selectionIsReady() -> Bool {
+        let defaults = UserDefaults.standard
+        guard let path = defaults.string(forKey: selectedModelPathKey) else { return false }
+        return FileManager.default.fileExists(atPath: path)
+    }
+
+    static func loadFromDefaults() -> CoreMLLLMService? {
+        let defaults = UserDefaults.standard
+        guard let path = defaults.string(forKey: selectedModelPathKey) else { return nil }
+        let url = URL(fileURLWithPath: path)
+        let service = CoreMLLLMService(modelURL: url)
+        return service.isAvailable ? service : nil
+    }
+
+    static func fromRegistry() async -> CoreMLLLMService? {
+        if let payload = await MainActor.run(body: { resolveRegistrySelection() }) {
+            return await makeService(url: payload.2, modelId: payload.0, installedModel: payload.1)
+        }
+        return loadFromDefaults()
+    }
+
+    private static func makeService(url: URL, modelId: UUID?, installedModel: InstalledModel?) async -> CoreMLLLMService? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let service = CoreMLLLMService(modelURL: url, modelId: modelId, installedModel: installedModel)
+                continuation.resume(returning: service.isAvailable ? service : nil)
+            }
+        }
+    }
+
+    // MARK: - Generation
+
     func generate(prompt: String, context: String?, config: InferenceConfig) async throws -> LLMResponse {
         guard let model = model else {
             throw LLMError.modelUnavailable
         }
-        
+
         let startTime = Date()
-        
-        // Construct augmented prompt
+
         let augmentedPrompt: String
         if let context = context, !context.isEmpty {
             augmentedPrompt = """
             Context: \(context)
-            
+
             Question: \(prompt)
-            
+
             Answer:
             """
         } else {
             augmentedPrompt = prompt
         }
-        
-        // Tokenize input (this is model-specific and would need a proper tokenizer)
-        // For now, this is a placeholder - in production, you'd use the model's tokenizer
+
         let inputTokens = tokenize(augmentedPrompt)
-        
-        // Create input feature provider
         let inputFeatures = try createInputFeatures(tokens: inputTokens, config: config)
-        
-        // Perform inference
         let prediction = try await model.prediction(from: inputFeatures)
-        
-        // Decode output tokens (model-specific)
         let outputText = try decodeOutput(prediction)
-        
+
         let totalTime = Date().timeIntervalSince(startTime)
-        
+
+        LLMStreamingContext.emit(text: outputText, isFinal: true)
+
         return LLMResponse(
             text: outputText,
-            tokensGenerated: outputText.split(separator: " ").count, // Rough estimate
-            timeToFirstToken: nil, // Core ML doesn't stream by default
+            tokensGenerated: outputText.split(separator: " ").count,
+            timeToFirstToken: nil,
             totalTime: totalTime,
             modelName: modelName,
             toolCallsMade: 0
         )
     }
-    
+
     // MARK: - Tokenization (Placeholder)
-    
+
     private func tokenize(_ text: String) -> [Int] {
-        // This is a placeholder - in production, use the model's specific tokenizer
-        // For real implementation, integrate swift-transformers or similar
-        return text.split(separator: " ").map { _ in Int.random(in: 0..<50000) }
+        text.split(separator: " ").map { _ in Int.random(in: 0..<50_000) }
     }
-    
+
     private func createInputFeatures(tokens: [Int], config: InferenceConfig) throws -> MLFeatureProvider {
-        // Create MLMultiArray for input tokens
-        // This is model-specific and depends on the model's input signature
         throw LLMError.notImplemented
     }
-    
+
     private func decodeOutput(_ prediction: MLFeatureProvider) throws -> String {
-        // Decode output tokens back to text
-        // This is model-specific and depends on the model's output signature
         throw LLMError.notImplemented
     }
 }
@@ -1543,6 +1724,8 @@ class OpenAILLMService: LLMService {
         
         let totalTime = Date().timeIntervalSince(startTime)
         print("   ✅ [OpenAI] Generation complete in \(String(format: "%.2f", totalTime))s")
+
+        LLMStreamingContext.emit(text: content, isFinal: true)
         
         return LLMResponse(
             text: content,

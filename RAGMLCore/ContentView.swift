@@ -8,11 +8,21 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var ragService = RAGService()
+    @StateObject private var containerService: ContainerService
+    @StateObject private var ragService: RAGService
+    @StateObject private var settingsStore: SettingsStore
     @State private var selectedTab: Tab = .chat
     
+    init() {
+        let containerSvc = ContainerService()
+        let ragSvc = RAGService(containerService: containerSvc)
+        _containerService = StateObject(wrappedValue: containerSvc)
+        _ragService = StateObject(wrappedValue: ragSvc)
+        _settingsStore = StateObject(wrappedValue: SettingsStore(ragService: ragSvc))
+    }
+    
     enum Tab {
-        case chat, documents, visualizations, models, settings
+        case chat, documents, visualizations, settings
     }
     
     var body: some View {
@@ -29,7 +39,11 @@ struct ContentView: View {
             .tag(Tab.chat)
             
             NavigationView {
-                DocumentLibraryView(ragService: ragService)
+                DocumentLibraryView(
+                    ragService: ragService,
+                    containerService: containerService,
+                    onViewVisualizations: { selectedTab = .visualizations }
+                )
             }
             #if os(iOS)
             .navigationViewStyle(.stack)
@@ -40,27 +54,17 @@ struct ContentView: View {
             .tag(Tab.documents)
             
             NavigationView {
-                VisualizationsView()
+                VisualizationsView(onRequestAddDocuments: { selectedTab = .documents })
                     .environmentObject(ragService)
+                    .environmentObject(containerService)
             }
             #if os(iOS)
             .navigationViewStyle(.stack)
             #endif
             .tabItem {
-                Label("Visualizations", systemImage: "chart.xyaxis.line")
+                Label("Visualizations", systemImage: "cube.transparent")
             }
             .tag(Tab.visualizations)
-            
-            NavigationView {
-                ModelManagerView(ragService: ragService)
-            }
-            #if os(iOS)
-            .navigationViewStyle(.stack)
-            #endif
-            .tabItem {
-                Label("Models", systemImage: "brain.head.profile")
-            }
-            .tag(Tab.models)
             
             NavigationView {
                 SettingsView(ragService: ragService)
@@ -68,6 +72,7 @@ struct ContentView: View {
             #if os(iOS)
             .navigationViewStyle(.stack)
             #endif
+            .environmentObject(settingsStore)
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
             }

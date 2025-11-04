@@ -43,7 +43,7 @@ struct TokenCadenceView: View {
                 phase = .pi * 2
             }
         }
-        .onChange(of: tokensPerSecond) { _ in
+        .onChange(of: tokensPerSecond) { _, _ in
             // Restart animation with updated duration when speed changes noticeably
             withAnimation(.linear(duration: duration).repeatForever(autoreverses: false)) {
                 phase += .pi // nudge phase to avoid visible reset

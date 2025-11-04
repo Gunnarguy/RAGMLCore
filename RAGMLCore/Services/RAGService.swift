@@ -21,7 +21,9 @@ class RAGService: ObservableObject {
     
     private let documentProcessor: DocumentProcessor
     private let embeddingService: EmbeddingService
-    private let vectorDatabase: VectorDatabase
+    let containerService: ContainerService
+    private let vectorRouter: VectorStoreRouter
+    private var cancellables = Set<AnyCancellable>()
     
     /// Helper to get document name by ID
     @MainActor
@@ -47,6 +49,10 @@ class RAGService: ObservableObject {
     
     // MARK: - Published State (MainActor-isolated for SwiftUI)
     
+    /// The container context for the currently executing query (if any).
+    /// Used to scope agentic tool calls and document listings during an in-flight query.
+    @MainActor private var currentQueryContainerId: UUID? = nil
+    
     @MainActor @Published var documents: [Document] = []
     @MainActor @Published var isProcessing: Bool = false
     @MainActor @Published var processingStatus: String = ""
@@ -62,6 +68,7 @@ class RAGService: ObservableObject {
     }
     
     private var _llmService: LLMService
+    private var _fallbackServices: [LLMService] = []
     
     // MARK: - Initialization
     
@@ -69,11 +76,15 @@ class RAGService: ObservableObject {
         documentProcessor: DocumentProcessor? = nil,
         embeddingService: EmbeddingService? = nil,
         vectorDatabase: VectorDatabase? = nil,
-        llmService: LLMService? = nil
+        llmService: LLMService? = nil,
+        containerService: ContainerService? = nil,
+        vectorRouter: VectorStoreRouter? = nil
     ) {
         self.documentProcessor = documentProcessor ?? DocumentProcessor()
         self.embeddingService = embeddingService ?? EmbeddingService()
-        self.vectorDatabase = vectorDatabase ?? PersistentVectorDatabase()
+        // Container + Vector store routing
+        self.containerService = containerService ?? ContainerService()
+        self.vectorRouter = vectorRouter ?? VectorStoreRouter()
         
         // Priority order for LLM selection:
         // 1. Custom service provided by caller
@@ -92,84 +103,40 @@ class RAGService: ObservableObject {
             Log.info("🔧 Initializing with user's selected model: \(selectedModelRaw)", category: .initialization)
             
             // Try to instantiate the user's selected model first
-            var service: LLMService?
+            let primaryService = Self.instantiateService(for: selectedModelRaw)
+            var fallbackServices = Self.buildFallbackChain(excluding: selectedModelRaw)
             
-            switch selectedModelRaw {
-            case "openai":
-                if let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
-                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-                    service = OpenAILLMService(apiKey: apiKey, model: model)
-                    print("✓ Using OpenAI Direct: \(model)")
+            let resolvedService: LLMService
+            if let primaryService {
+                resolvedService = primaryService
+            } else if let fallback = fallbackServices.first {
+                fallbackServices.removeFirst()
+                Log.warning(
+                    "Selected model \(selectedModelRaw) unavailable; falling back to \(fallback.modelName)",
+                    category: .initialization
+                )
+                Log.info("✓ Using \(fallback.modelName) as active model", category: .initialization)
+                resolvedService = fallback
+#if canImport(FoundationModels)
+                if #available(iOS 26.0, *), let foundationFallback = resolvedService as? AppleFoundationLLMService {
+                    foundationFallback.startWarmup()
+                    Log.debug("🔥 Preloading model in background for instant first query", category: .initialization)
                 }
-                
-            case "apple_intelligence":
-                #if canImport(FoundationModels)
-                if #available(iOS 26.0, *) {
-                    let foundationService = AppleFoundationLLMService()
-                    if foundationService.isAvailable {
-                        service = foundationService
-                        foundationService.startWarmup()  // Start preloading model
-                        print("✓ Using Apple Foundation Models (on-device + PCC)")
-                        print("  🔥 Preloading model in background for instant first query")
-                    }
-                }
-                #endif
-                
-            case "chatgpt_extension":
-                if #available(iOS 18.1, *) {
-                    let chatGPTService = AppleChatGPTExtensionService()
-                    if chatGPTService.isAvailable {
-                        service = chatGPTService
-                        print("✓ Using ChatGPT Extension (Apple Intelligence)")
-                    } else {
-                        print("⚠️  ChatGPT Extension not available - check Settings > Apple Intelligence & Siri")
-                    }
-                }
-                
-            case "on_device_analysis":
-                service = OnDeviceAnalysisService()
-                print("✓ Using On-Device Analysis (extractive QA)")
-                
-            default:
-                print("⚠️  Unknown model type: \(selectedModelRaw)")
+#endif
+            } else {
+                Log.warning(
+                    "No configured LLM available; defaulting to On-Device Analysis",
+                    category: .initialization
+                )
+                resolvedService = OnDeviceAnalysisService()
             }
             
-            // If selected model unavailable, try fallback order
-            if service == nil {
-                print("⚠️  Selected model '\(selectedModelRaw)' unavailable, trying fallbacks...")
-                
-                // Fallback order: Apple Intelligence → OpenAI → On-Device Analysis
-                #if canImport(FoundationModels)
-                if #available(iOS 26.0, *) {
-                    let foundationService = AppleFoundationLLMService()
-                    if foundationService.isAvailable {
-                        service = foundationService
-                        print("✓ Fallback: Using Apple Foundation Models")
-                    }
-                }
-                #endif
-                
-                if service == nil,
-                   let apiKey = UserDefaults.standard.string(forKey: "openaiAPIKey"),
-                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
-                    service = OpenAILLMService(apiKey: apiKey, model: model)
-                    print("✓ Fallback: Using OpenAI Direct: \(model)")
-                }
-                
-                if service == nil {
-                    service = OnDeviceAnalysisService()
-                    print("✓ Fallback: Using On-Device Analysis (extractive QA)")
-                }
-            }
-            
-            // Assign the service (guaranteed to be non-nil at this point)
-            self._llmService = service!
+            self._llmService = resolvedService
+            self._fallbackServices = fallbackServices
             
             // Connect tool handler for agentic RAG (Foundation Models only)
             self._llmService.toolHandler = self
-            print("🔗 Tool handler connected for agentic RAG")
+            Log.info("🔗 Tool handler connected for agentic RAG", category: .initialization)
         }
         
         // Load persisted documents metadata
@@ -222,13 +189,43 @@ class RAGService: ObservableObject {
         }
     }
     
+    // MARK: - Vector DB Access
+    
+    private func dbForActiveContainer() async -> VectorDatabase {
+        let container = await MainActor.run { self.containerService.activeContainer }
+        // ContainerService guarantees at least one container
+        return self.vectorRouter.db(for: container!)
+    }
+    
+    /// Return a database for a specific container id (falls back to active on miss)
+    private func dbFor(_ containerId: UUID) async -> VectorDatabase {
+        let container = await MainActor.run { self.containerService.containers.first { $0.id == containerId } }
+        if let c = container {
+            return self.vectorRouter.db(for: c)
+        } else {
+            return await dbForActiveContainer()
+        }
+    }
+    
+    /// Return all chunks stored for the active container.
+    /// Used by visualization views to render embedding spaces and statistics.
+    func allChunksForActiveContainer() async -> [DocumentChunk] {
+        let db = await dbForActiveContainer()
+        do {
+            return try await db.allChunks()
+        } catch {
+            print("❌ [RAGService] Failed to load all chunks for active container: \(error.localizedDescription)")
+            return []
+        }
+    }
+    
     // MARK: - LLM Service Management
     
     /// Dynamically updates the LLM service (called from Settings)
     func updateLLMService(_ newService: LLMService) async {
         await MainActor.run {
             self._llmService = newService
-            print("✓ Switched to: \(newService.modelName)")
+            Log.info("✓ Switched to: \(newService.modelName)", category: .initialization)
         }
     }
     
@@ -238,6 +235,7 @@ class RAGService: ObservableObject {
     /// This performs the full ingestion pipeline: parse → chunk → embed → store
     func addDocument(at url: URL) async throws {
         let filename = url.lastPathComponent
+        let activeContainerId = await MainActor.run { self.containerService.activeContainerId }
         let pipelineStartTime = Date()
         TelemetryCenter.emit(
             .ingestion,
@@ -351,8 +349,11 @@ class RAGService: ObservableObject {
                 duration: chunkingTime
             )
             
-            // Step 4: Store chunks in vector database
-            try await vectorDatabase.storeBatch(chunks: documentChunks)
+            // Step 4: Store chunks in vector database (per active container)
+            let db = await dbForActiveContainer()
+            try await db.storeBatch(chunks: documentChunks)
+            // Invalidate visualization cache for this container after data change
+            ProjectionCache.shared.invalidate(forContainer: activeContainerId)
             TelemetryCenter.emit(
                 .storage,
                 title: "Chunks stored",
@@ -417,6 +418,19 @@ class RAGService: ObservableObject {
                 )
             }
             
+            // Ensure document is associated with the active container
+            let docWithContainer = Document(
+                id: updatedDocument.id,
+                filename: updatedDocument.filename,
+                fileURL: updatedDocument.fileURL,
+                contentType: updatedDocument.contentType,
+                addedAt: updatedDocument.addedAt,
+                totalChunks: updatedDocument.totalChunks,
+                processingMetadata: updatedDocument.processingMetadata,
+                containerId: activeContainerId
+            )
+            updatedDocument = docWithContainer
+
             // Create processing summary
             let summary = ProcessingSummary(
                 filename: filename,
@@ -500,7 +514,12 @@ class RAGService: ObservableObject {
     
     /// Remove a document from the knowledge base
     func removeDocument(_ document: Document) async throws {
-        try await vectorDatabase.deleteChunks(forDocument: document.id)
+        let db = await dbForActiveContainer()
+        try await db.deleteChunks(forDocument: document.id)
+        
+        // Invalidate visualization cache for active container after removal
+        let activeId = await MainActor.run { self.containerService.activeContainerId }
+        ProjectionCache.shared.invalidate(forContainer: activeId)
         
         await MainActor.run {
             documents.removeAll { $0.id == document.id }
@@ -514,11 +533,16 @@ class RAGService: ObservableObject {
     
     /// Clear all documents from the knowledge base
     func clearAllDocuments() async throws {
-        try await vectorDatabase.clear()
+        let db = await dbForActiveContainer()
+        try await db.clear()
+        
+        let activeId = await MainActor.run { self.containerService.activeContainerId }
+        // Invalidate visualization cache for the cleared container
+        ProjectionCache.shared.invalidate(forContainer: activeId)
         
         await MainActor.run {
-            documents.removeAll()
-            totalChunksStored = 0
+            documents.removeAll { $0.containerId == activeId }
+            totalChunksStored = documents.reduce(0) { $0 + $1.totalChunks }
         }
         
         saveDocumentsToDisk()
@@ -529,13 +553,51 @@ class RAGService: ObservableObject {
     // MARK: - RAG Query Pipeline
     
     /// Execute a RAG query: expand query → embed → hybrid search → re-rank → generate response
-    func query(_ question: String, topK: Int = 3, config: InferenceConfig? = nil) async throws -> RAGResponse {
+    func query(
+        _ question: String,
+        topK: Int = 3,
+        config: InferenceConfig? = nil,
+        containerId: UUID? = nil,
+        streamHandler: LLMStreamHandler? = nil
+    ) async throws -> RAGResponse {
+        return try await LLMStreamingContext.$handler.withValue(streamHandler) {
+            try await self.queryInternal(question, topK: topK, config: config, containerId: containerId)
+        }
+    }
+
+    private func queryInternal(_ question: String, topK: Int, config: InferenceConfig?, containerId: UUID?) async throws -> RAGResponse {
         let inferenceConfig = config ?? InferenceConfig()
+        let strictMode: Bool = await MainActor.run {
+            if let id = containerId, let container = self.containerService.containers.first(where: { $0.id == id }) {
+                return container.strictMode
+            } else {
+                return self.containerService.activeContainer?.strictMode ?? false
+            }
+        }
+        // Establish query-scoped container context for downstream tool calls and listings
+        await MainActor.run {
+            self.currentQueryContainerId = containerId ?? self.containerService.activeContainerId
+        }
+        // Optional DB warmup to ensure the vector store is loaded (prevents first-touch latency)
+        let _ = try? await (containerId != nil ? dbFor(containerId!) : dbForActiveContainer()).count()
+        // Ensure cleanup even if an error is thrown later in the pipeline
+        defer {
+            Task { await MainActor.run { self.currentQueryContainerId = nil } }
+        }
+        // Selected container context details (id/name/dimension)
+        let (selectedId, selectedName, selectedDim) = await MainActor.run { () -> (UUID, String, Int) in
+            let id = containerId ?? self.containerService.activeContainerId
+            let container = self.containerService.containers.first { $0.id == id }
+            let name = container?.name ?? "Unknown"
+            let dim = container?.embeddingDim ?? 512
+            return (id, name, dim)
+        }
         // Query heuristics for short/generic prompts
         let queryWords = question.split(separator: " ").count
         let effectiveTopK = max(1, (queryWords <= 2) ? min(topK, 3) : min(topK, 10))
         // Fetch current stored chunk count from vector database (fallback to cached total)
-        let totalStored = (try? await vectorDatabase.count()) ?? totalChunksStored
+        let vdb = await (containerId != nil ? dbFor(containerId!) : dbForActiveContainer())
+        let totalStored = (try? await vdb.count()) ?? totalChunksStored
         
         Log.box(
             "ENHANCED RAG QUERY PIPELINE",
@@ -551,7 +613,9 @@ class RAGService: ObservableObject {
             .system,
             title: "Query received",
             metadata: [
-                "question": String(question.prefix(80))
+                "question": String(question.prefix(80)),
+                "container": selectedName,
+                "containerId": selectedId.uuidString
             ]
         )
         
@@ -633,10 +697,25 @@ class RAGService: ObservableObject {
                     duration: embeddingTime
                 )
                 
+                // Warn if embedding dimension doesn't match the selected library's index dimension
+                if queryEmbedding.count != selectedDim {
+                    TelemetryCenter.emit(
+                        .system,
+                        severity: .warning,
+                        title: "Embedding dimension mismatch",
+                        metadata: [
+                            "expected": "\(selectedDim)",
+                            "got": "\(queryEmbedding.count)",
+                            "container": selectedName,
+                            "containerId": selectedId.uuidString
+                        ]
+                    )
+                }
+                
                 // Step 3: Hybrid Search (vector + BM25 keyword search with RRF fusion)
                 Log.section("Step 3: Hybrid Search (Vector + BM25)", level: .info, category: .pipeline)
                 let retrievalStartTime = Date()
-                let hybridSearch = HybridSearchService(vectorDatabase: vectorDatabase)
+                let hybridSearch = HybridSearchService(vectorDatabase: vdb)
                 // Use expanded queries for keyword search (original for vector)
                 let retrievedChunks = try await hybridSearch.search(
                     query: expandedQueries.joined(separator: " "),  // Combine expansions
@@ -671,7 +750,7 @@ class RAGService: ObservableObject {
                 }
                 
                 // Add source information for citations with a safe MainActor snapshot
-                let docsSnapshot = await MainActor.run { self.documents }
+                let docsSnapshot = await snapshotDocuments()
                 let chunksWithSources: [RetrievedChunk] = retrievedChunks.map { retrieved in
                     let docName = docsSnapshot.first(where: { $0.id == retrieved.chunk.documentId })?.filename ?? "Unknown"
                     let pageNum = retrieved.chunk.metadata.pageNumber
@@ -689,7 +768,9 @@ class RAGService: ObservableObject {
                     title: "Hybrid retrieval",
                     metadata: [
                         "candidates": "\(chunksWithSources.count)",
-                        "topK": "\(effectiveTopK * 2)"
+                        "topK": "\(effectiveTopK * 2)",
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
                     ],
                     duration: retrievalTime
                 )
@@ -739,15 +820,50 @@ class RAGService: ObservableObject {
                 }
                 
                 // Step 4.3: Filter low-confidence chunks (critical for medical accuracy)
-                let minSimilarity: Float = 0.35  // Threshold: chunks below this are likely not relevant
-                let filteredChunks = await engine.filterBySimilarity(
+                // Adaptive gating: consider "lenient" mode and trivial/short queries
+                let lenient = UserDefaults.standard.bool(forKey: "lenientRetrievalMode")
+                let isTrivial = (queryWords <= 2) || ["test","help","hello","hi","hey","ok","okay"].contains(lowerQ)
+                
+                // Relative-score metrics (computed on reranked results)
+                let topSim: Float = rerankedChunks.first?.similarityScore ?? 0
+                let secondSim: Float = rerankedChunks.dropFirst().first?.similarityScore ?? 0
+                let avgTop5: Float = {
+                    let sims = rerankedChunks.prefix(5).map { $0.similarityScore }
+                    guard !sims.isEmpty else { return 0 }
+                    return sims.reduce(0, +) / Float(sims.count)
+                }()
+                
+                // Dynamic threshold: strict by default, relaxed when lenient or trivial
+                let dynamicMin: Float = (strictMode && !lenient && !isTrivial) ? 0.52 : 0.35
+                var filteredChunks = await engine.filterBySimilarity(
                     chunks: rerankedChunks,
-                    min: minSimilarity
+                    min: dynamicMin
+                )
+                
+                // Acceptance override if relative signals are strong even with modest absolute scores
+                let acceptanceOverride: Bool =
+                    (topSim >= 0.50) ||
+                    (topSim >= 0.38 && (topSim - avgTop5) >= 0.05) ||
+                    ((topSim - secondSim) >= 0.07)
+                
+                TelemetryCenter.emit(
+                    .retrieval,
+                    title: "Gating metrics",
+                    metadata: [
+                        "strictMode": strictMode ? "true" : "false",
+                        "lenient": lenient ? "true" : "false",
+                        "isTrivial": isTrivial ? "true" : "false",
+                        "topSim": String(format: "%.3f", topSim),
+                        "secondSim": String(format: "%.3f", secondSim),
+                        "avgTop5": String(format: "%.3f", avgTop5),
+                        "minSim": String(format: "%.2f", dynamicMin),
+                        "override": acceptanceOverride ? "true" : "false"
+                    ]
                 )
                 
                 if filteredChunks.count < rerankedChunks.count {
                     let dropped = rerankedChunks.count - filteredChunks.count
-                    Log.warning("   ⚠️  Filtered out \(dropped) low-confidence chunks (< \(String(format: "%.2f", minSimilarity)))", category: .retrieval)
+                    Log.warning("   ⚠️  Filtered out \(dropped) low-confidence chunks (< \(String(format: "%.2f", dynamicMin)))", category: .retrieval)
                     TelemetryCenter.emit(
                         .retrieval,
                         severity: .warning,
@@ -757,17 +873,65 @@ class RAGService: ObservableObject {
                 }
                 
                 // Edge case: No high-confidence chunks
-                guard !filteredChunks.isEmpty else {
-                    Log.error("   ❌ No high-confidence chunks found (all below threshold)", category: .retrieval)
-                    TelemetryCenter.emit(
-                        .retrieval,
-                        severity: .error,
-                        title: "No high-confidence context",
-                        metadata: [
-                            "threshold": String(format: "%.2f", minSimilarity)
-                        ]
-                    )
-                    throw RAGServiceError.noRelevantContext
+                if filteredChunks.isEmpty {
+                    if acceptanceOverride || lenient || isTrivial {
+                        // Use top reranked results directly under override/lenient conditions
+                        filteredChunks = Array(rerankedChunks.prefix(effectiveTopK))
+                        Log.info("   ✅ Acceptance override applied; proceeding with top reranked results", category: .retrieval)
+                        TelemetryCenter.emit(
+                            .retrieval,
+                            title: "Acceptance override",
+                            metadata: [
+                                "topSim": String(format: "%.3f", topSim),
+                                "secondSim": String(format: "%.3f", secondSim),
+                                "avgTop5": String(format: "%.3f", avgTop5)
+                            ]
+                        )
+                    } else {
+                        // Graceful fallback: try On-Device Analysis with extracted context
+                        Log.error("   ❌ No high-confidence chunks found (all below threshold) — falling back to On‑Device Analysis", category: .retrieval)
+                        TelemetryCenter.emit(
+                            .retrieval,
+                            severity: .error,
+                            title: "No high-confidence context (fallback to On‑Device Analysis)",
+                            metadata: [
+                                "threshold": String(format: "%.2f", dynamicMin)
+                            ]
+                        )
+                        
+                        // Assemble concise context from the best available reranked results
+                        let (fallbackContext, usedCount) = await engine.assembleContext(
+                            chunks: Array(rerankedChunks.prefix(max(effectiveTopK, 3))),
+                            maxChars: (llmService is AppleFoundationLLMService) ? 1200 : 2500
+                        )
+                        
+                        let local = OnDeviceAnalysisService()
+                        let fallbackResp = try await local.generate(
+                            prompt: question,
+                            context: fallbackContext.isEmpty ? nil : fallbackContext,
+                            config: inferenceConfig
+                        )
+                        
+                        let meta = ResponseMetadata(
+                            timeToFirstToken: fallbackResp.timeToFirstToken,
+                            totalGenerationTime: fallbackResp.totalTime,
+                            tokensGenerated: fallbackResp.tokensGenerated,
+                            tokensPerSecond: fallbackResp.tokensPerSecond,
+                            modelUsed: local.modelName,
+                            retrievalTime: retrievalTime,
+                            strictModeEnabled: strictMode,
+                            gatingDecision: "fallback_ondevice_low_confidence"
+                        )
+                        
+                        return RAGResponse(
+                            queryId: ragQuery.id,
+                            retrievedChunks: Array(rerankedChunks.prefix(usedCount > 0 ? usedCount : effectiveTopK)),
+                            generatedResponse: fallbackResp.text,
+                            metadata: meta,
+                            confidenceScore: 0.0,
+                            qualityWarnings: ["Low-confidence retrieval: answered using extractive on‑device analysis"]
+                        )
+                    }
                 }
                 
                 // Step 4.5: Apply MMR for diversity (critical for medical/comprehensive coverage)
@@ -777,7 +941,7 @@ class RAGService: ObservableObject {
                     candidates: filteredChunks,
                     queryEmbedding: queryEmbedding,
                     topK: effectiveTopK,  // Clamped for short queries
-                    lambda: 0.7  // 0.7 = balance relevance vs diversity (higher = more relevance)
+                    lambda: strictMode ? 0.75 : 0.7  // Strict mode favors relevance slightly more
                 )
                 let mmrTime = Date().timeIntervalSince(mmrStartTime)
                 Log.info("✓ Selected \(diverseChunks.count) diverse chunks in \(String(format: "%.0f", mmrTime * 1000))ms", category: .retrieval)
@@ -812,6 +976,45 @@ class RAGService: ObservableObject {
                     Log.verbose("      \"\(preview)...\"", category: .retrieval)
                 }
                 
+                // Strict Mode enforcement: require sufficient high-confidence evidence
+                if strictMode && !(lenient || acceptanceOverride || isTrivial) {
+                    let supporting = diverseChunks.filter { $0.similarityScore >= 0.52 }
+                    if supporting.count < 3 {
+                        // Build cautious response with citations of top candidates
+                        let topSources = diverseChunks.prefix(3).enumerated().map { idx, r in
+                            let src = r.sourceDocument.isEmpty ? "Unknown" : r.sourceDocument
+                            let page = r.pageNumber.map { " (p.\($0))" } ?? ""
+                            return "- [\(idx + 1)] \(src)\(page) — \(String(format: "%.0f%%", r.similarityScore * 100))"
+                        }.joined(separator: "\n")
+                        let caution = """
+                        Strict Mode is enabled. Not enough high-confidence evidence (>= 52% similarity) across at least 3 chunks was found to answer reliably.
+
+                        Top sources retrieved:
+                        \(topSources)
+                        """
+
+                        let metadata = ResponseMetadata(
+                            timeToFirstToken: nil,
+                            totalGenerationTime: 0,
+                            tokensGenerated: 0,
+                            tokensPerSecond: nil,
+                            modelUsed: llmService.modelName,
+                            retrievalTime: retrievalTime,
+                            strictModeEnabled: strictMode,
+                            gatingDecision: "strict_blocked"
+                        )
+
+                        return RAGResponse(
+                            queryId: ragQuery.id,
+                            retrievedChunks: diverseChunks,
+                            generatedResponse: caution,
+                            metadata: metadata,
+                            confidenceScore: 0.0,
+                            qualityWarnings: ["Strict mode: insufficient supporting evidence"]
+                        )
+                    }
+                }
+
                 // Step 5: Construct context from diverse chunks (off-main)
                 // Note: rawContext assembly is handled via engine.assembleContext with size limits
                 
@@ -849,7 +1052,9 @@ class RAGService: ObservableObject {
                     title: "Context assembled",
                     metadata: [
                         "chunks": "\(actualChunksUsed)",
-                        "chars": "\(contextSize)"
+                        "chars": "\(contextSize)",
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
                     ]
                 )
                 
@@ -872,6 +1077,9 @@ class RAGService: ObservableObject {
                 
                 // Token budgeting for Apple FM (conservative ~4K window)
                 var genConfig = inferenceConfig
+                if strictMode {
+                    genConfig.temperature = min(genConfig.temperature, 0.2)
+                }
                 do {
                     let window = 4000
                     let safety = 400
@@ -885,7 +1093,7 @@ class RAGService: ObservableObject {
                 // Attempt generation with retry on context-overflow
                 var llmResponse: LLMResponse
                 do {
-                    llmResponse = try await llmService.generate(
+                    llmResponse = try await generateWithFallback(
                         prompt: question,
                         context: context,
                         config: genConfig
@@ -907,7 +1115,7 @@ class RAGService: ObservableObject {
                             title: "Retry due to context overflow",
                             metadata: ["initialTokens": "\(genConfig.maxTokens)", "reducedTokens": "\(reducedMax)"]
                         )
-                        llmResponse = try await llmService.generate(
+                        llmResponse = try await generateWithFallback(
                             prompt: question,
                             context: context2,
                             config: retryConfig
@@ -923,7 +1131,9 @@ class RAGService: ObservableObject {
                     title: "Response generated",
                     metadata: [
                         "model": llmService.modelName,
-                        "tokens": "\(llmResponse.tokensGenerated)"
+                        "tokens": "\(llmResponse.tokensGenerated)",
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
                     ],
                     duration: generationTime
                 )
@@ -953,7 +1163,7 @@ class RAGService: ObservableObject {
                     
                     // Step 7: Calculate confidence score and quality warnings
                     Log.section("Step 7: Quality Assessment", level: .info, category: .pipeline)
-                    let totalDocsCount = await MainActor.run { documents.count }
+                    let totalDocsCount = await snapshotDocumentsCount()
                     let (confidenceScore, qualityWarnings) = await engine.assessResponseQuality(
                         chunks: diverseChunks,
                         query: question,
@@ -999,19 +1209,24 @@ class RAGService: ObservableObject {
                         title: "Query complete",
                         metadata: [
                             "duration": String(format: "%.2f", pipelineTotalTime),
-                            "chunks": "\(diverseChunks.count)"
+                            "chunks": "\(diverseChunks.count)",
+                            "container": selectedName,
+                            "containerId": selectedId.uuidString
                         ],
                         duration: pipelineTotalTime
                     )
                     
                     // Step 9: Create response metadata
+                    let gatingSummary: String? = acceptanceOverride ? "acceptance_override" : ((lenient || isTrivial) ? "lenient" : nil)
                     let metadata = ResponseMetadata(
                         timeToFirstToken: llmResponse.timeToFirstToken,
                         totalGenerationTime: llmResponse.totalTime,
                         tokensGenerated: llmResponse.tokensGenerated,
                         tokensPerSecond: llmResponse.tokensPerSecond,
                         modelUsed: llmResponse.modelName ?? llmService.modelName,
-                        retrievalTime: retrievalTime
+                        retrievalTime: retrievalTime,
+                        strictModeEnabled: strictMode,
+                        gatingDecision: gatingSummary
                     )
                     
                     let response = RAGResponse(
@@ -1038,7 +1253,8 @@ class RAGService: ObservableObject {
                         tokensGenerated: 0,
                         tokensPerSecond: nil,
                         modelUsed: llmService.modelName,
-                        retrievalTime: retrievalTime
+                        retrievalTime: retrievalTime,
+                        strictModeEnabled: strictMode
                     )
                     
                     return RAGResponse(
@@ -1057,13 +1273,17 @@ class RAGService: ObservableObject {
                 TelemetryCenter.emit(
                     .system,
                     title: "Direct chat mode",
-                    metadata: ["model": llmService.modelName]
+                    metadata: [
+                        "model": llmService.modelName,
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
+                    ]
                 )
                 
                 Log.section("Direct LLM Generation (No RAG)", level: .info, category: .pipeline)
                 let generationStartTime = Date()
                 
-                let llmResponse = try await llmService.generate(
+                let llmResponse = try await generateWithFallback(
                     prompt: question,
                     context: nil,  // No document context
                     config: inferenceConfig
@@ -1075,7 +1295,9 @@ class RAGService: ObservableObject {
                     title: "Response generated",
                     metadata: [
                         "model": llmService.modelName,
-                        "tokens": "\(llmResponse.tokensGenerated)"
+                        "tokens": "\(llmResponse.tokensGenerated)",
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
                     ],
                     duration: generationTime
                 )
@@ -1092,7 +1314,8 @@ class RAGService: ObservableObject {
                     tokensGenerated: llmResponse.tokensGenerated,
                     tokensPerSecond: llmResponse.tokensPerSecond,
                     modelUsed: llmResponse.modelName ?? llmService.modelName,  // Use actual execution location if available
-                    retrievalTime: 0  // No retrieval in direct chat mode
+                    retrievalTime: 0,  // No retrieval in direct chat mode
+                    strictModeEnabled: strictMode
                 )
                 
                 let response = RAGResponse(
@@ -1109,7 +1332,9 @@ class RAGService: ObservableObject {
                     title: "Query complete",
                     metadata: [
                         "duration": String(format: "%.2f", totalTime),
-                        "mode": "direct"
+                        "mode": "direct",
+                        "container": selectedName,
+                        "containerId": selectedId.uuidString
                     ],
                     duration: totalTime
                 )
@@ -1152,6 +1377,7 @@ class RAGService: ObservableObject {
         fallbackNote: String? = nil
     ) async throws -> RAGResponse {
         Log.info("ℹ️  Falling back to direct LLM chat mode", category: .pipeline)
+        let strictMode = await MainActor.run { self.containerService.activeContainer?.strictMode ?? false }
         TelemetryCenter.emit(
             .system,
             title: "Direct chat mode",
@@ -1161,7 +1387,7 @@ class RAGService: ObservableObject {
         Log.section("Direct LLM Generation (No RAG)", level: .info, category: .pipeline)
         let generationStartTime = Date()
         
-        let llmResponse = try await llmService.generate(
+        let llmResponse = try await generateWithFallback(
             prompt: question,
             context: nil,  // No document context
             config: inferenceConfig
@@ -1189,8 +1415,9 @@ class RAGService: ObservableObject {
             totalGenerationTime: llmResponse.totalTime,
             tokensGenerated: llmResponse.tokensGenerated,
             tokensPerSecond: llmResponse.tokensPerSecond,
-            modelUsed: llmResponse.modelName ?? llmService.modelName,
-            retrievalTime: retrievalTime
+            modelUsed: llmService.modelName,
+            retrievalTime: retrievalTime,
+            strictModeEnabled: strictMode
         )
         
         var warnings: [String] = []
@@ -1222,12 +1449,23 @@ class RAGService: ObservableObject {
     
     // MARK: - Model Management
     
+    /// Update LLM service with optional fallback chain
+    /// - Parameters:
+    ///   - primary: The primary LLM service to use
+    ///   - fallbacks: Optional array of fallback services to try if primary fails
+    @MainActor
+    func updateLLMService(_ primary: LLMService, fallbacks: [LLMService] = []) {
+        self._llmService = primary
+        self._fallbackServices = fallbacks
+        Log.info("✓ Updated model: \(primary.modelName) with \(fallbacks.count) fallback(s)", category: .initialization)
+    }
+    
     /// Switch to a different LLM implementation
     /// Note: Use updateLLMService() for async/MainActor-safe switching
     func switchModel(to service: LLMService) async {
         await MainActor.run {
             self._llmService = service
-            print("✓ Switched to model: \(service.modelName)")
+            Log.info("✓ Switched to model: \(service.modelName)", category: .initialization)
         }
     }
     
@@ -1240,7 +1478,183 @@ class RAGService: ObservableObject {
         llmService.modelName
     }
     
+    // MARK: - Fallback-Aware Generation
+    
+    /// Try to generate with primary service, automatically falling back to configured fallbacks on failure
+    private func generateWithFallback(
+        prompt: String,
+        context: String?,
+        config: InferenceConfig
+    ) async throws -> LLMResponse {
+        // Try primary first
+        do {
+            let response = try await _llmService.generate(
+                prompt: prompt,
+                context: context,
+                config: config
+            )
+            if LLMStreamingContext.handler != nil {
+                LLMStreamingContext.emit(text: "", isFinal: true)
+            }
+            return response
+        } catch {
+            Log.warning("Primary model \(_llmService.modelName) failed: \(error.localizedDescription)", category: .llm)
+            
+            // Try fallbacks in order
+            for (index, fallbackService) in _fallbackServices.enumerated() {
+                Log.info("Attempting fallback #\(index + 1): \(fallbackService.modelName)", category: .llm)
+                do {
+                    let response = try await fallbackService.generate(
+                        prompt: prompt,
+                        context: context,
+                        config: config
+                    )
+                    Log.info("✓ Fallback #\(index + 1) succeeded: \(fallbackService.modelName)", category: .llm)
+                    if LLMStreamingContext.handler != nil {
+                        LLMStreamingContext.emit(text: "", isFinal: true)
+                    }
+                    return response
+                } catch {
+                    Log.warning("Fallback #\(index + 1) failed: \(error.localizedDescription)", category: .llm)
+                    continue
+                }
+            }
+            
+            // All fallbacks exhausted - rethrow original error
+            throw error
+        }
+    }
+    
     // MARK: - Private Helpers
+
+    /// Returns a configured service for the given settings key, if available.
+    private static func instantiateService(for modelKey: String) -> LLMService? {
+        switch modelKey {
+        case "openai":
+            #if os(macOS)
+            guard let storedKey = UserDefaults.standard.string(forKey: "openaiAPIKey")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !storedKey.isEmpty else {
+                Log.warning("OpenAI Direct selected but API key is missing", category: .initialization)
+                return nil
+            }
+            let model = UserDefaults.standard.string(forKey: "openaiModel") ?? "gpt-4o-mini"
+            if model.hasPrefix("gpt-5") {
+                Log.info("✓ Using OpenAI Direct (Responses API): \(model)", category: .initialization)
+                return OpenAIResponsesAPIService(apiKey: storedKey, model: model)
+            } else {
+                Log.info("✓ Using OpenAI Direct (Chat Completions): \(model)", category: .initialization)
+                return OpenAILLMService(apiKey: storedKey, model: model)
+            }
+            #else
+            Log.info("OpenAI Direct disabled on iOS for Apple-native configuration", category: .initialization)
+            return nil
+            #endif
+        case "apple_intelligence":
+            #if canImport(FoundationModels)
+            if #available(iOS 26.0, *) {
+                let foundationService = AppleFoundationLLMService()
+                guard foundationService.isAvailable else {
+                    Log.warning("Apple Foundation Models unavailable on this device", category: .initialization)
+                    return nil
+                }
+                foundationService.startWarmup()
+                Log.info("✓ Using Apple Foundation Models (on-device + PCC)", category: .initialization)
+                Log.debug("🔥 Preloading model in background for instant first query", category: .initialization)
+                return foundationService
+            } else {
+                Log.warning("Apple Intelligence requires iOS 26.0 or later", category: .initialization)
+            }
+            #endif
+            return nil
+        case "chatgpt_extension":
+            if #available(iOS 18.1, *) {
+                let chatGPTService = AppleChatGPTExtensionService()
+                if chatGPTService.isAvailable {
+                    Log.info("✓ Using ChatGPT Extension (Apple Intelligence)", category: .initialization)
+                    return chatGPTService
+                } else {
+                    Log.warning("ChatGPT Extension not available - check Settings > Apple Intelligence & Siri", category: .initialization)
+                }
+            } else {
+                Log.warning("ChatGPT Extension requires iOS 18.1 or later", category: .initialization)
+            }
+            return nil
+        case "on_device_analysis":
+            Log.info("✓ Using On-Device Analysis (extractive QA)", category: .initialization)
+            return OnDeviceAnalysisService()
+        case "mlx_local":
+            #if os(macOS)
+            let model = UserDefaults.standard.string(forKey: "mlxModel") ?? "local-mlx-model"
+            let stream = UserDefaults.standard.bool(forKey: "mlxStream")
+            if let base = UserDefaults.standard.string(forKey: "mlxBaseURL"),
+               let url = URL(string: base) {
+                Log.info("✓ Using MLX Local: \(base) [model=\(model), stream=\(stream)]", category: .initialization)
+                return MLXPresetLLMService(baseURL: url, model: model, stream: stream)
+            } else if let defaultURL = URL(string: "http://127.0.0.1:17860") {
+                Log.info("✓ Using MLX Local (default): \(defaultURL.absoluteString) [model=\(model), stream=\(stream)]", category: .initialization)
+                return MLXPresetLLMService(baseURL: defaultURL, model: model, stream: stream)
+            }
+            return nil
+            #else
+            Log.warning("MLX Local presets are only available on macOS", category: .initialization)
+            return nil
+            #endif
+        case "coreml_local":
+            if let coreMLService = CoreMLLLMService.loadFromDefaults() {
+                Log.info("✓ Using Core ML Local: \(coreMLService.modelName)", category: .initialization)
+                return coreMLService
+            } else {
+                Log.warning("Core ML Local selected but no model configured", category: .initialization)
+                return nil
+            }
+        case "llama_cpp_local":
+            #if os(macOS)
+            Log.info("✓ Using llama.cpp Local (defaults)", category: .initialization)
+            return LlamaCPPPresetLLMService()
+            #else
+            Log.warning("llama.cpp local preset is only available on macOS", category: .initialization)
+            return nil
+            #endif
+        case "ollama_local":
+            #if os(macOS)
+            Log.info("✓ Using Ollama Local (defaults)", category: .initialization)
+            return OllamaPresetLLMService()
+            #else
+            Log.warning("Ollama local preset is only available on macOS", category: .initialization)
+            return nil
+            #endif
+        case "gguf_local":
+            #if os(iOS)
+            Log.warning("GGUF Local selected - model loading deferred to first use", category: .initialization)
+            return nil
+            #else
+            Log.warning("GGUF Local preset is only supported on iOS", category: .initialization)
+            return nil
+            #endif
+        default:
+            Log.warning("Unknown model type: \(modelKey)", category: .initialization)
+            return nil
+        }
+    }
+
+    /// Builds an ordered list of fallback services, excluding the user's primary selection.
+    private static func buildFallbackChain(excluding modelKey: String) -> [LLMService] {
+        var fallbacks: [LLMService] = []
+        #if canImport(FoundationModels)
+        if modelKey != "apple_intelligence" {
+            if #available(iOS 26.0, *) {
+                let foundationService = AppleFoundationLLMService()
+                if foundationService.isAvailable {
+                    fallbacks.append(foundationService)
+                }
+            }
+        }
+        #endif
+        if modelKey != "on_device_analysis" {
+            fallbacks.append(OnDeviceAnalysisService())
+        }
+        return fallbacks
+    }
     
     
     /// Print query statistics for debugging
@@ -1260,7 +1674,48 @@ class RAGService: ObservableObject {
         print("  Total time: \(String(format: "%.2f", response.metadata.retrievalTime + response.metadata.totalGenerationTime))s\n")
     }
     
-    // MARK: - Response Quality Assessment
+ // MARK: - MainActor snapshot helpers (async to avoid superfluous await warnings)
+
+nonisolated
+private func snapshotDocuments() async -> [Document] {
+    await MainActor.run { self.documents }
+}
+
+nonisolated
+private func snapshotDocumentsCount() async -> Int {
+    await MainActor.run { self.documents.count }
+}
+
+nonisolated
+private func documentName(for documentId: UUID) async -> String {
+    await MainActor.run { self.getDocumentName(for: documentId) }
+}
+
+/// Run an async operation under a temporary query-scoped container context.
+/// Sets currentQueryContainerId for the duration of the operation so agentic tools
+/// like listDocuments/searchDocuments are scoped deterministically in diagnostics.
+func withQueryContainerContext<T>(
+    containerId: UUID?,
+    warmup: Bool = true,
+    _ operation: () async throws -> T
+) async rethrows -> T {
+    // Resolve selected container id (override or active)
+    let selectedId: UUID = await MainActor.run { containerId ?? self.containerService.activeContainerId }
+    // Establish context
+    await MainActor.run { self.currentQueryContainerId = selectedId }
+    // Optional warmup to ensure DB loaded (avoids first-touch latency)
+    if warmup {
+        let _ = try? await dbFor(selectedId).count()
+    }
+    // Ensure cleanup
+    defer {
+        Task { await MainActor.run { self.currentQueryContainerId = nil } }
+    }
+    // Execute caller's operation
+    return try await operation()
+}
+
+// MARK: - Response Quality Assessment
     
     /// Calculate confidence score and identify quality warnings
     /// Critical for medical/high-stakes information retrieval
@@ -1829,7 +2284,10 @@ extension RAGService: RAGToolHandler {
         // Use the existing RAG pipeline to search
         let queryEmbedding = try await embeddingService.generateEmbedding(for: query)
         
-        let retrievedChunks = try await vectorDatabase.search(
+        let selectedId = await MainActor.run { self.currentQueryContainerId ?? self.containerService.activeContainerId }
+        let db = await dbFor(selectedId)
+        
+        let retrievedChunks = try await db.search(
             embedding: queryEmbedding,
             topK: 3  // Return top 3 chunks for tool call
         )
@@ -1842,7 +2300,7 @@ extension RAGService: RAGToolHandler {
         var result = "Found \(retrievedChunks.count) relevant chunks:\n\n"
         
         for (index, retrieved) in retrievedChunks.enumerated() {
-            let docName = await getDocumentName(for: retrieved.chunk.documentId)
+            let docName = await documentName(for: retrieved.chunk.documentId)
             result += "[\(index + 1)] From \(docName)"
             if let page = retrieved.chunk.metadata.pageNumber {
                 result += " (Page \(page))"
@@ -1858,18 +2316,77 @@ extension RAGService: RAGToolHandler {
         return result
     }
     
+    /// Agentic search with optional topK and minSimilarity (called by Function Calling)
+    func searchDocuments(query: String, topK: Int?, minSimilarity: Float?) async throws -> String {
+        print("🔧 [Tool Call] search_documents(query: \"\(query)\", topK: \(topK?.description ?? "nil"), minSimilarity: \(minSimilarity?.description ?? "nil"))")
+        
+        // Step 1: Embed the query
+        let queryEmbedding = try await embeddingService.generateEmbedding(for: query)
+        
+        // Step 2: Vector search with optional k
+        let k = max(1, topK ?? 3)
+        let selectedId = await MainActor.run { self.currentQueryContainerId ?? self.containerService.activeContainerId }
+        let db = await dbFor(selectedId)
+        var retrievedChunks = try await db.search(
+            embedding: queryEmbedding,
+            topK: k
+        )
+        
+        // Step 3: Optional similarity filtering
+        if let minSim = minSimilarity {
+            let engine = RAGEngine()
+            retrievedChunks = await engine.filterBySimilarity(chunks: retrievedChunks, min: minSim)
+        }
+        
+        // Edge case: No results
+        if retrievedChunks.isEmpty {
+            return "No relevant information found for: \(query)"
+        }
+        
+        // Step 4: Format retrieved chunks for LLM consumption (citations + preview)
+        var result = "Found \(retrievedChunks.count) relevant chunks:\n\n"
+        for (index, retrieved) in retrievedChunks.enumerated() {
+            let docName = await documentName(for: retrieved.chunk.documentId)
+            result += "[\(index + 1)] From \(docName)"
+            if let page = retrieved.chunk.metadata.pageNumber {
+                result += " (Page \(page))"
+            }
+            result += " (Relevance: \(String(format: "%.1f%%", retrieved.similarityScore * 100))):\n"
+            let fullText = retrieved.chunk.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let preview = fullText.count > 600 ? String(fullText.prefix(600)) + " [...]" : fullText
+            result += preview
+            result += "\n\n"
+        }
+        
+        print("✅ [Tool Call] Returned \(retrievedChunks.count) chunks")
+        return result
+    }
+    
     /// List all available documents
     /// Called by the LLM when user asks what documents are available
     func listDocuments() async throws -> String {
         print("🔧 [Tool Call] list_documents()")
         
-        if documents.isEmpty {
-            return "No documents available in the library."
+        // Scope to the query's container (or active if no query in flight)
+        let (activeId, defaultId, docsSnapshot) = await MainActor.run {
+            (self.currentQueryContainerId ?? self.containerService.activeContainerId,
+             self.containerService.containers.first?.id,
+             self.documents)
+        }
+        let scopedDocs = docsSnapshot.filter { doc in
+            if let cid = doc.containerId {
+                return cid == activeId
+            } else {
+                return activeId == defaultId
+            }
+        }
+        if scopedDocs.isEmpty {
+            return "No documents available in the selected library."
         }
         
-        var result = "Available documents (\(documents.count)):\n\n"
+        var result = "Available documents (\(scopedDocs.count)):\n\n"
         
-        for (index, doc) in documents.enumerated() {
+        for (index, doc) in scopedDocs.enumerated() {
             result += "\(index + 1). \(doc.filename)\n"
             if let pages = doc.processingMetadata?.pagesProcessed {
                 result += "   - Pages: \(pages)\n"
@@ -1879,7 +2396,7 @@ extension RAGService: RAGToolHandler {
             result += "\n"
         }
         
-        print("✅ [Tool Call] Listed \(documents.count) documents")
+        print("✅ [Tool Call] Listed \(scopedDocs.count) documents (scoped)")
         return result
     }
     
@@ -1888,8 +2405,21 @@ extension RAGService: RAGToolHandler {
     func getDocumentSummary(documentName: String) async throws -> String {
         print("🔧 [Tool Call] get_document_summary(documentName: \"\(documentName)\")")
         
-        guard let doc = documents.first(where: { $0.filename.lowercased().contains(documentName.lowercased()) }) else {
-            return "Document not found: \(documentName)"
+        // Scope to the query's container (or active if no query in flight)
+        let (activeId, defaultId, docsSnapshot) = await MainActor.run {
+            (self.currentQueryContainerId ?? self.containerService.activeContainerId,
+             self.containerService.containers.first?.id,
+             self.documents)
+        }
+        let scopedDocs = docsSnapshot.filter { d in
+            if let cid = d.containerId {
+                return cid == activeId
+            } else {
+                return activeId == defaultId
+            }
+        }
+        guard let doc = scopedDocs.first(where: { $0.filename.lowercased().contains(documentName.lowercased()) }) else {
+            return "Document not found in selected library: \(documentName)"
         }
         
         var result = "Document: \(doc.filename)\n"
@@ -1900,7 +2430,7 @@ extension RAGService: RAGToolHandler {
         result += "- Added: \(formatDate(doc.addedAt))\n"
         result += "- File Type: \(doc.contentType.rawValue)"
         
-        print("✅ [Tool Call] Returned summary for \(doc.filename)")
+        print("✅ [Tool Call] Returned summary for \(doc.filename) (scoped)")
         return result
     }
     

@@ -25,12 +25,23 @@ struct ModelPipelineStage: Identifiable {
             }
         }
 
+        var shortCode: String {
+            switch self {
+            case .primary:
+                return "P"
+            case .fallback:
+                return "F"
+            case .optional:
+                return "O"
+            }
+        }
+
         var tint: Color {
             switch self {
             case .primary:
-                return .green
+                return .accentColor
             case .fallback:
-                return .blue
+                return .orange
             case .optional:
                 return .secondary
             }

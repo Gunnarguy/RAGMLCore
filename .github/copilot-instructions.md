@@ -138,6 +138,7 @@ let session = LanguageModelSession(
 ```bash
 open RAGMLCore.xcodeproj
 # ⌘ + B to build | ⌘ + R to run
+# DEFAULT SIMULATOR: iPhone 17 Pro Max (unless user specifies otherwise)
 ```
 
 Manual checks:

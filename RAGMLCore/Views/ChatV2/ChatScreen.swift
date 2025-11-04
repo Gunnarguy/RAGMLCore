@@ -38,6 +38,13 @@ struct ChatScreen: View {
     @State private var execution: ChatExecutionLocation = .unknown
     @State private var ttft: TimeInterval?
     
+    // Active-container scoped counts for status bar
+    @State private var activeDocCount: Int = 0
+    @State private var activeChunkCount: Int = 0
+    
+    // One-off per-message container override
+    @State private var messageContainerOverride: UUID? = nil
+    
     // Settings (synchronized with SettingsView via @AppStorage)
     @AppStorage("llmTemperature") private var temperature: Double = 0.7
     @AppStorage("llmMaxTokens") private var maxTokens: Int = 500
@@ -48,29 +55,49 @@ struct ChatScreen: View {
         VStack(spacing: 0) {
             // Header removed (moved actions to NavigationBar toolbar)
 
-            // Context / Status Bar
+            // Container selector (scopes chat retrieval)
+            ContainerPickerStrip(containerService: ragService.containerService)
+                .padding(.horizontal)
+            
+            // One-off override (applies to next message only)
+            HStack(spacing: DSSpacing.sm) {
+                Text("This message:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Picker("Library", selection: $messageContainerOverride) {
+                    // Nil = use pinned active container
+                    let activeName = ragService.containerService.activeContainer?.name ?? "Active"
+                    Text("Active: \(activeName)").tag(Optional<UUID>.none)
+                    ForEach(ragService.containerService.containers, id: \.id) { c in
+                        Text(c.name).tag(Optional(c.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                if messageContainerOverride != nil {
+                    Button {
+                        messageContainerOverride = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            .padding(.horizontal)
+            
+            // Context / Status Bar (active-container scoped)
             ContextStatusBarView(
-                docCount: ragService.documents.count,
-                chunkCount: ragService.totalChunksStored,
-                retrievalTopK: retrievalTopK
+                docCount: activeDocCount,
+                chunkCount: activeChunkCount,
+                usedK: latestRetrievedCount
             )
 
             Divider()
 
-            // Message list with pipeline overlay behind
-            ZStack(alignment: .top) {
-                PipelineOverlayView(
-                    stage: stage,
-                    retrievedCount: stage == .searching ? 0 : latestRetrievedCount,
-                    isGenerating: isProcessing
-                )
-                .opacity(stage == .idle ? 0.0 : 0.5)
-                .zIndex(0)
-                MessageListView(messages: $messages)
-                    .zIndex(1)
-            }
-            .clipped()
-            .padding(.bottom, DSSpacing.md)
+            MessageListView(messages: $messages)
+                .clipped()
+                .padding(.bottom, DSSpacing.md)
             
             
             
@@ -135,7 +162,16 @@ struct ChatScreen: View {
                 nowTick = Date()
             }
         }
+        // Recalculate counts when active container changes
+        .task(id: ragService.containerService.activeContainerId) {
+            await recalcActiveCounts()
+        }
+        // Recalculate when documents list changes (objectWillChange is a coarse signal)
+        .onReceive(ragService.objectWillChange) { _ in
+            Task { await recalcActiveCounts() }
+        }
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
@@ -153,6 +189,25 @@ struct ChatScreen: View {
                         .imageScale(.large)
                 }
             }
+            #else
+            ToolbarItem {
+                Menu {
+                    Button {
+                        newChat()
+                    } label: {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                    }
+                    Button(role: .destructive) {
+                        clearChat()
+                    } label: {
+                        Label("Clear Chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .imageScale(.large)
+                }
+            }
+            #endif
         }
         .sheet(isPresented: $showRetrievedDetails) {
             if let meta = currentMetadata {
@@ -174,6 +229,27 @@ struct ChatScreen: View {
                 }
                 .padding()
             }
+        }
+    }
+    
+    // MARK: - Active-container counts
+    
+    private func recalcActiveCounts() async {
+        let activeId = await MainActor.run { ragService.containerService.activeContainerId }
+        let defaultId = await MainActor.run { ragService.containerService.containers.first?.id }
+        let docsSnapshot = await MainActor.run { ragService.documents }
+        // Match Visualizations/Documents parity for legacy docs
+        let docsForActive = docsSnapshot.filter { doc in
+            if let cid = doc.containerId {
+                return cid == activeId
+            } else {
+                return activeId == defaultId
+            }
+        }
+        let chunksForActive = await ragService.allChunksForActiveContainer()
+        await MainActor.run {
+            self.activeDocCount = docsForActive.count
+            self.activeChunkCount = chunksForActive.count
         }
     }
     
@@ -270,9 +346,13 @@ struct ChatScreen: View {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
         
-        // Append user message
-        let userMessage = ChatMessage(role: .user, content: query)
+        // Append user message with selected container (override or active)
+        var userMessage = ChatMessage(role: .user, content: query)
+        let usedContainerId = messageContainerOverride ?? ragService.containerService.activeContainerId
+        userMessage.containerId = usedContainerId
         messages.append(userMessage)
+        // Reset override after one use
+        self.messageContainerOverride = nil
         
         // Reset and start processing
         isProcessing = true
@@ -280,17 +360,24 @@ struct ChatScreen: View {
         execution = .unknown
         ttft = nil
         
-        // Capture values for async task
-        let capturedQuery = query
+        // Capture values for async task (query may be clarified asynchronously)
         let capturedTopK = retrievalTopK
         let capturedMaxTokens = maxTokens
         let capturedTemperature = temperature
         let capturedExecutionContext = executionContext
         let capturedAllowPCC = allowPrivateCloudCompute
         let capturedService = ragService
+        let capturedUsedContainerId = usedContainerId
+        streamingText = ""
         
         Task(priority: .userInitiated) {
             do {
+                // Clarify the user's query using Writing Tools if available (improves retrieval quality)
+                var capturedQuery = query
+                if let clarified = try? await WritingToolsService().clarifyQuery(query) {
+                    capturedQuery = clarified
+                }
+                
                 // Stage 1: Embedding
                 await MainActor.run {
                     self.stage = .embedding
@@ -335,23 +422,26 @@ struct ChatScreen: View {
                     self.pushToast("Generating…", icon: "sparkles", tint: DSColors.accent)
                 }
                 
-                let response = try await capturedService.query(capturedQuery, topK: capturedTopK, config: config)
+                let response = try await capturedService.query(
+                    capturedQuery,
+                    topK: capturedTopK,
+                    config: config,
+                    containerId: capturedUsedContainerId,
+                    streamHandler: { event in
+                        await MainActor.run {
+                            if event.isFinal {
+                                self.streamingText = ""
+                            } else if !event.text.isEmpty {
+                                self.streamingText.append(event.text)
+                            }
+                        }
+                    }
+                )
                 
                 await MainActor.run {
                     self.currentRetrievedChunks = response.retrievedChunks
                     self.currentMetadata = response.metadata
                     self.pushToast("Found \(response.retrievedChunks.count) source\(response.retrievedChunks.count == 1 ? "" : "s")", icon: "doc.text.magnifyingglass", tint: .green)
-                }
-                
-                // Simulated streaming of the full response in chunks for a responsive UI
-                let responseText = response.generatedResponse
-                let chunkSize = 12
-                for i in stride(from: 0, to: responseText.count, by: chunkSize) {
-                    let start = responseText.index(responseText.startIndex, offsetBy: i)
-                    let end = responseText.index(responseText.startIndex, offsetBy: min(i + chunkSize, responseText.count))
-                    let chunk = String(responseText[start..<end])
-                    await MainActor.run { self.streamingText.append(chunk) }
-                    try? await Task.sleep(nanoseconds: 20_000_000) // 0.02s per chunk
                 }
                 
                 // Update execution badge based on TTFT heuristic
@@ -364,12 +454,13 @@ struct ChatScreen: View {
                     }
                 }
                 
-                let assistant = ChatMessage(
+                var assistant = ChatMessage(
                     role: .assistant,
                     content: response.generatedResponse,
                     metadata: response.metadata,
                     retrievedChunks: response.retrievedChunks
                 )
+                assistant.containerId = capturedUsedContainerId
                 
                 await MainActor.run {
                     self.streamingText = ""
@@ -392,6 +483,7 @@ struct ChatScreen: View {
                 await MainActor.run {
                     self.isProcessing = false
                     self.stage = .idle
+                    self.streamingText = ""
                 }
             }
         }
@@ -455,7 +547,7 @@ struct ChatHeader: View {
 struct ContextStatusBarView: View {
     let docCount: Int
     let chunkCount: Int
-    let retrievalTopK: Int
+    let usedK: Int
 
     var body: some View {
         HStack(spacing: 8) {
@@ -477,7 +569,7 @@ struct ContextStatusBarView: View {
 
             Spacer()
 
-            Text("\(retrievalTopK) chunks/query")
+            Text("k used: \(usedK)")
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

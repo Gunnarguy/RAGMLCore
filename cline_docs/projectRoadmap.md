@@ -22,6 +22,7 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
   - [x] Introduce EmbeddingProvider protocol
   - [x] Implement NLEmbeddingProvider (512-dim word-avg parity)
   - [x] Refactor EmbeddingService to delegate to provider
+  - [x] Add Apple FM embedding provider scaffold (awaiting public API; currently unavailable)
   - [ ] Add Core ML sentence encoder provider (implement tokenization/IO)
   - [ ] Add index namespacing + re-embed workflow for dimension changes
 - [x] LLM backends and Settings wiring
@@ -29,9 +30,9 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
   - [x] Add MLXLocalLLMService (macOS-only, local server bridge)
   - [x] Wire new backends into SettingsView picker and pipeline stages
   - [ ] CoreMLLLMService: complete tokenization/input-output mapping for one model
-  - [ ] Add tool-call accounting in AppleFoundationLLMService (agentic RAG metrics)
+  - [x] Add tool-call accounting in AppleFoundationLLMService (agentic RAG metrics)
 - [ ] Writing and authoring features
-  - [ ] Integrate WritingTools into chat composer (rewrite/summarize/tone)
+  - [x] Integrate WritingTools into chat composer (query clarify pass; rewrite/summarize/tone TBD)
   - [ ] Provide fallbacks when WritingTools unavailable
 - [ ] Speech and multimodal
   - [ ] ASR with SFSpeechRecognizer for voice prompts
@@ -42,7 +43,7 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
   - [ ] Polish ChatGPT Extension pathways when entitlements available
 - [ ] Telemetry, privacy, diagnostics
   - [ ] TelemetryCenter: backendUsed, executionLocation, TTFT, tokens/sec, toolCallsMade
-  - [ ] Capability diagnostics surfaces “why unavailable” and actionable tips
+  - [x] Capability diagnostics surfaces “why unavailable” and actionable tips (initial iOS GGUF gating help + sheet)
   - [ ] UI badge for execution location (📱 On‑Device / ☁️ PCC / 🔑 OpenAI / 🖥️ MLX)
 
 ## Completion Criteria
@@ -56,13 +57,24 @@ Deliver a first-class, privacy-forward RAG assistant on Apple platforms that:
 
 ## Progress Tracker (Snapshot)
 - Embeddings: 3/5
-- LLM Backends: 3/5
-- Writing/Authoring: 0/2
+- LLM Backends: 4/5
+- Writing/Authoring: 1/2
 - Speech/Multimodal: 0/3
 - Intents: 0/2
-- Telemetry/Diagnostics: 0/3
+- Telemetry/Diagnostics: 1/3
 
 ## Completed Tasks (History)
+- 2025-11-04
+  - iOS GGUF diagnostics: added Benchmark button and TTFT/tok/s readout
+  - Settings: “Why Unavailable?” detail sheet for model gating with remediation (iOS GGUF, Core ML, Apple Intelligence)
+  - User guide: userInstructions/ios-gguf-local-setup.md for linking LocalLLMClient and activating GGUF Local
+- 2025-10-30
+  - Strict Mode enforcement for high-stakes containers:
+    - Similarity threshold ≥ 0.52 and minimum supporting chunks ≥ 3
+    - MMR λ = 0.75 to slightly favor relevance over diversity
+    - Generation temperature capped at 0.2 under strict mode
+    - Cautious non-answer path with top source citations when insufficient evidence
+  - UI: Added Strict Mode badge in Response Details
 - 2025-10-29
   - Platform-gating and DSColors pass across Settings, Model Management, Diagnostics, Telemetry, Documents, and legacy ChatView
   - Fixed ChatView macOS build blockers (iOS-gated navigationBarTitleDisplayMode, macOS .automatic toolbar placement)

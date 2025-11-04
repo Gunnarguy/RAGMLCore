@@ -14,6 +14,7 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
     var metadata: ResponseMetadata?
     var retrievedChunks: [RetrievedChunk]?
+    var containerId: UUID? = nil
     
     enum Role {
         case user

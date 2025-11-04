@@ -13,6 +13,12 @@ struct ChatResponseDetailsView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: DSSpacing.md) {
+            if metadata.strictModeEnabled {
+                strictModeBadge
+            }
+            if let decision = metadata.gatingDecision {
+                gatingBadge(for: decision)
+            }
             performanceMetricsSection
             
             if !retrievedChunks.isEmpty {
@@ -74,6 +80,63 @@ struct ChatResponseDetailsView: View {
         .padding(12)
         .background(DSColors.surface.opacity(0.6))
         .cornerRadius(12)
+    }
+    
+    // MARK: - Strict Mode Badge
+    private var strictModeBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield.fill")
+                .foregroundColor(.red)
+            Text("Strict Mode")
+                .font(DSTypography.meta)
+                .fontWeight(.semibold)
+                .foregroundColor(DSColors.primaryText)
+        }
+        .padding(8)
+        .background(Color.red.opacity(0.12))
+        .cornerRadius(8)
+    }
+    
+    // MARK: - Gating Decision Badge
+    private func gatingBadge(for decision: String) -> some View {
+        let icon: String
+        let label: String
+        let color: Color
+        
+        switch decision {
+        case "acceptance_override":
+            icon = "checkmark.seal.fill"
+            label = "Acceptance Override"
+            color = .green
+        case "lenient":
+            icon = "hand.thumbsup.fill"
+            label = "Lenient Mode"
+            color = .blue
+        case "strict_blocked":
+            icon = "exclamationmark.triangle.fill"
+            label = "Strict Gate"
+            color = .red
+        case "fallback_ondevice_low_confidence":
+            icon = "bolt.horizontal.circle.fill"
+            label = "On‑Device Fallback"
+            color = .orange
+        default:
+            icon = "questionmark.circle.fill"
+            label = decision
+            color = .gray
+        }
+        
+        return HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+            Text(label)
+                .font(DSTypography.meta)
+                .fontWeight(.semibold)
+                .foregroundColor(DSColors.primaryText)
+        }
+        .padding(8)
+        .background(color.opacity(0.12))
+        .cornerRadius(8)
     }
     
     // MARK: - Retrieved Context Section

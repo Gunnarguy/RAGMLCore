@@ -40,7 +40,7 @@ struct MessageListView: View {
                     .padding(.horizontal, DSSpacing.md)
                     .padding(.vertical, DSSpacing.md)
                 }
-                .onChange(of: messages.count) { _ in
+                .onChange(of: messages.count) { _, _ in
                     if shouldAutoScroll {
                         withAnimation(DSAnimations.fastEase) {
                             proxy.scrollTo("bottom-anchor", anchor: .bottom)
@@ -99,7 +99,7 @@ struct MessageRowView: View {
                 MessageBubbleView(message: message)
 
                 // Meta row (timestamp; execution badge hook in later pass)
-                MessageMetaView(date: message.timestamp)
+                MessageMetaView(date: message.timestamp, metadata: message.metadata)
 
                 // Sources chips (assistant only)
                 if message.role == .assistant, let chunks = message.retrievedChunks, !chunks.isEmpty {
@@ -161,6 +161,30 @@ struct MessageBubbleView: View {
 
 struct MessageMetaView: View {
     let date: Date
+    let metadata: ResponseMetadata?
+
+    private var executionBadge: (emoji: String, label: String)? {
+        guard let meta = metadata else { return nil }
+        let model = meta.modelUsed
+        if model.localizedCaseInsensitiveContains("On-Device") {
+            return ("📱", "On‑Device")
+        }
+        if model.localizedCaseInsensitiveContains("Private Cloud Compute") ||
+           model.localizedCaseInsensitiveContains("PCC") {
+            return ("☁️", "PCC")
+        }
+        if model.localizedCaseInsensitiveContains("OpenAI") {
+            return ("🔑", "OpenAI")
+        }
+        if model.localizedCaseInsensitiveContains("MLX") {
+            return ("🖥️", "MLX")
+        }
+        // Fallback: infer from TTFT if available
+        if let ttft = meta.timeToFirstToken {
+            return ttft < 1.0 ? ("📱", "On‑Device") : ("☁️", "PCC")
+        }
+        return nil
+    }
 
     var body: some View {
         HStack(spacing: DSSpacing.xxs) {
@@ -170,6 +194,17 @@ struct MessageMetaView: View {
             Text(date.formatted(date: .omitted, time: .shortened))
                 .font(DSTypography.meta)
                 .foregroundColor(DSColors.secondaryText)
+
+            if let badgeTuple: (emoji: String, label: String) = executionBadge {
+                let badgeText = "\(badgeTuple.emoji) \(badgeTuple.label)"
+                Text(badgeText)
+                    .font(DSTypography.meta)
+                    .foregroundColor(DSColors.secondaryText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(DSColors.surface)
+                    .clipShape(Capsule())
+            }
         }
         .padding(.horizontal, DSSpacing.xs)
     }

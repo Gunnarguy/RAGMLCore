@@ -74,18 +74,24 @@ struct ResponseMetadata: Sendable {
     let tokensPerSecond: Float?
     let modelUsed: String
     let retrievalTime: TimeInterval
+    let strictModeEnabled: Bool
+    let gatingDecision: String?
     
     init(timeToFirstToken: TimeInterval? = nil,
          totalGenerationTime: TimeInterval,
          tokensGenerated: Int,
          tokensPerSecond: Float? = nil,
          modelUsed: String,
-         retrievalTime: TimeInterval) {
+         retrievalTime: TimeInterval,
+         strictModeEnabled: Bool = false,
+         gatingDecision: String? = nil) {
         self.timeToFirstToken = timeToFirstToken
         self.totalGenerationTime = totalGenerationTime
         self.tokensGenerated = tokensGenerated
         self.tokensPerSecond = tokensPerSecond
         self.modelUsed = modelUsed
         self.retrievalTime = retrievalTime
+        self.strictModeEnabled = strictModeEnabled
+        self.gatingDecision = gatingDecision
     }
 }

@@ -75,10 +75,9 @@ struct ChatComposer: View {
 
 // MARK: - Preview
 
-#Preview {
+#Preview(traits: .sizeThatFitsLayout) {
     ChatComposer(isProcessing: false) { text in
         print("Send: \(text)")
     }
-    .previewLayout(.sizeThatFits)
     .padding()
 }

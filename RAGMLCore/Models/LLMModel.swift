@@ -46,6 +46,7 @@ struct LLMModel: Identifiable, Codable {
 enum ModelType: String, Codable {
     case appleFoundation = "Apple Foundation"
     case appleHybrid = "Apple Intelligence (Hybrid)"
+    case appleChatGPT = "Apple Intelligence ChatGPT"
     case openAI = "OpenAI (Cloud)"
     case onDeviceAnalysis = "On-Device Analysis"
     case coreMLPackage = "Core ML Package"

@@ -26,6 +26,21 @@ class QueryEnhancementService {
         let synonyms = generateSynonyms(for: keyTerms)
         print("   📚 Synonyms found: \(synonyms.count)")
         
+        // 2.5 Handle trivial/underspecified queries to help BM25
+        let tokenCount = query.split(separator: " ").count
+        let trimmedLower = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let trivialSet: Set<String> = ["test","help","hello","hi","hey","ok","okay","thanks","thank you"]
+        if tokenCount <= 1 || keyTerms.isEmpty || trivialSet.contains(trimmedLower) {
+            expandedQueries.append("\(query) overview")
+            expandedQueries.append("\(query) summary")
+            expandedQueries.append("\(query) introduction")
+            expandedQueries.append("overview")
+            expandedQueries.append("summary")
+            print("   🔧 Trivial input detected; added generic boost terms for BM25")
+            print("   ✅ Generated \(expandedQueries.count) query variations")
+            return Array(Set(expandedQueries))
+        }
+        
         // 3. Create expanded query versions
         if !synonyms.isEmpty {
             // Version 1: Replace key terms with synonyms

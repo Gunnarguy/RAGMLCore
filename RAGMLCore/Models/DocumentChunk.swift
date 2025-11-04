@@ -50,8 +50,18 @@ struct Document: Identifiable, Codable {
     let addedAt: Date
     let totalChunks: Int
     let processingMetadata: ProcessingMetadata?
+    let containerId: UUID?
     
-    init(id: UUID = UUID(), filename: String, fileURL: URL, contentType: DocumentType, addedAt: Date = Date(), totalChunks: Int = 0, processingMetadata: ProcessingMetadata? = nil) {
+    init(
+        id: UUID = UUID(),
+        filename: String,
+        fileURL: URL,
+        contentType: DocumentType,
+        addedAt: Date = Date(),
+        totalChunks: Int = 0,
+        processingMetadata: ProcessingMetadata? = nil,
+        containerId: UUID? = nil
+    ) {
         self.id = id
         self.filename = filename
         self.fileURL = fileURL
@@ -59,6 +69,7 @@ struct Document: Identifiable, Codable {
         self.addedAt = addedAt
         self.totalChunks = totalChunks
         self.processingMetadata = processingMetadata
+        self.containerId = containerId
     }
 }
 
