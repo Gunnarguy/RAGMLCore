@@ -5,8 +5,8 @@
 //  Created by Cline on 10/28/25.
 //
 
-import SwiftUI
 import Combine
+import SwiftUI
 
 // ChatV2 entry point (feature-flagged from ContentView)
 struct ChatScreen: View {
@@ -25,26 +25,27 @@ struct ChatScreen: View {
     @State private var generatingElapsedFinal: TimeInterval? = nil
     // Live clock tick to drive elapsed UI
     @State private var nowTick: Date = Date()
-    @State private var processingClock = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
+    @State private var processingClock = Timer.publish(every: 0.2, on: .main, in: .common)
+        .autoconnect()
     // Ephemeral UI and retrieval
     @State private var toasts: [ToastItem] = []
     @State private var currentRetrievedChunks: [RetrievedChunk] = []
     @State private var currentMetadata: ResponseMetadata? = nil
     @State private var showRetrievedDetails: Bool = false
-    
+
     // Processing State
     @State private var isProcessing: Bool = false
     @State private var stage: ChatProcessingStage = .idle
     @State private var execution: ChatExecutionLocation = .unknown
     @State private var ttft: TimeInterval?
-    
+
     // Active-container scoped counts for status bar
     @State private var activeDocCount: Int = 0
     @State private var activeChunkCount: Int = 0
-    
+
     // One-off per-message container override
     @State private var messageContainerOverride: UUID? = nil
-    
+
     // Settings (synchronized with SettingsView via @AppStorage)
     @AppStorage("llmTemperature") private var temperature: Double = 0.7
     @AppStorage("llmMaxTokens") private var maxTokens: Int = 500
@@ -58,7 +59,7 @@ struct ChatScreen: View {
             // Container selector (scopes chat retrieval)
             ContainerPickerStrip(containerService: ragService.containerService)
                 .padding(.horizontal)
-            
+
             // One-off override (applies to next message only)
             HStack(spacing: DSSpacing.sm) {
                 Text("This message:")
@@ -85,7 +86,7 @@ struct ChatScreen: View {
                 Spacer()
             }
             .padding(.horizontal)
-            
+
             // Context / Status Bar (active-container scoped)
             ContextStatusBarView(
                 docCount: activeDocCount,
@@ -98,9 +99,7 @@ struct ChatScreen: View {
             MessageListView(messages: $messages)
                 .clipped()
                 .padding(.bottom, DSSpacing.md)
-            
-            
-            
+
             // Streaming row (verbose but clean)
             if isProcessing && !streamingText.isEmpty {
                 HStack(alignment: .top, spacing: DSSpacing.xs) {
@@ -112,10 +111,13 @@ struct ChatScreen: View {
                             .padding(.horizontal, DSSpacing.sm)
                             .padding(.vertical, DSSpacing.sm)
                             .background(DSColors.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: DSCorners.bubble, style: .continuous))
+                            .clipShape(
+                                RoundedRectangle(cornerRadius: DSCorners.bubble, style: .continuous)
+                            )
                             .bubbleShadow()
                         HStack(spacing: DSSpacing.xs) {
-                            TokenCadenceView(tokensApprox: tokensApprox, tokensPerSecond: tokensPerSecondApprox)
+                            TokenCadenceView(
+                                tokensApprox: tokensApprox, tokensPerSecond: tokensPerSecondApprox)
                             TypingIndicator()
                         }
                     }
@@ -124,7 +126,7 @@ struct ChatScreen: View {
                 .padding(.horizontal, DSSpacing.md)
                 .transition(.opacity.combined(with: .scale))
             }
-            
+
             // Stage indicator + execution badge (stacked, not overlay)
             StageProgressBar(
                 stage: stage,
@@ -134,7 +136,7 @@ struct ChatScreen: View {
                 searchingElapsed: searchingElapsedDisplay,
                 generatingElapsed: generatingElapsedDisplay
             )
-            
+
             // Live telemetry strip during generation (stacked, not overlay)
             if isProcessing {
                 LiveCountersStrip(
@@ -153,9 +155,9 @@ struct ChatScreen: View {
                 onSend: sendMessage
             )
         }
-        .navigationTitle("Chat")
+        .navigationTitle(ragService.currentModelName)
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
         #endif
         .onReceive(processingClock) { _ in
             if isProcessing {
@@ -172,41 +174,41 @@ struct ChatScreen: View {
         }
         .toolbar {
             #if os(iOS)
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        newChat()
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            newChat()
+                        } label: {
+                            Label("New Chat", systemImage: "square.and.pencil")
+                        }
+                        Button(role: .destructive) {
+                            clearChat()
+                        } label: {
+                            Label("Clear Chat", systemImage: "trash")
+                        }
                     } label: {
-                        Label("New Chat", systemImage: "square.and.pencil")
+                        Image(systemName: "ellipsis.circle")
+                            .imageScale(.large)
                     }
-                    Button(role: .destructive) {
-                        clearChat()
-                    } label: {
-                        Label("Clear Chat", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .imageScale(.large)
                 }
-            }
             #else
-            ToolbarItem {
-                Menu {
-                    Button {
-                        newChat()
+                ToolbarItem {
+                    Menu {
+                        Button {
+                            newChat()
+                        } label: {
+                            Label("New Chat", systemImage: "square.and.pencil")
+                        }
+                        Button(role: .destructive) {
+                            clearChat()
+                        } label: {
+                            Label("Clear Chat", systemImage: "trash")
+                        }
                     } label: {
-                        Label("New Chat", systemImage: "square.and.pencil")
+                        Image(systemName: "ellipsis.circle")
+                            .imageScale(.large)
                     }
-                    Button(role: .destructive) {
-                        clearChat()
-                    } label: {
-                        Label("Clear Chat", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .imageScale(.large)
                 }
-            }
             #endif
         }
         .sheet(isPresented: $showRetrievedDetails) {
@@ -224,16 +226,16 @@ struct ChatScreen: View {
                             .font(DSTypography.body)
                             .foregroundColor(DSColors.secondaryText)
                     } else {
-                        SourceChipsView(chunks: currentRetrievedChunks) { }
+                        SourceChipsView(chunks: currentRetrievedChunks) {}
                     }
                 }
                 .padding()
             }
         }
     }
-    
+
     // MARK: - Active-container counts
-    
+
     private func recalcActiveCounts() async {
         let activeId = await MainActor.run { ragService.containerService.activeContainerId }
         let defaultId = await MainActor.run { ragService.containerService.containers.first?.id }
@@ -252,25 +254,25 @@ struct ChatScreen: View {
             self.activeChunkCount = chunksForActive.count
         }
     }
-    
+
     // MARK: - Derived counters
     private var latestRetrievedCount: Int {
         messages.last(where: { $0.role == .assistant })?.retrievedChunks?.count ?? 0
     }
-    
+
     private var tokensApprox: Int {
         // Approximate tokens by whitespace-separated words
         let words = streamingText.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
         return words.count
     }
-    
+
     private var tokensPerSecondApprox: Double {
         guard let start = generationStart else { return 0 }
         let elapsed = Date().timeIntervalSince(start)
         guard elapsed > 0 else { return 0 }
         return Double(tokensApprox) / elapsed
     }
-    
+
     // Live per-stage elapsed timers
     private var embeddingElapsedDisplay: TimeInterval? {
         let _ = nowTick
@@ -280,7 +282,9 @@ struct ChatScreen: View {
     }
     private var searchingElapsedDisplay: TimeInterval? {
         let _ = nowTick
-        if let final = searchingElapsedFinal, stage == .generating || stage == .complete || stage == .idle {
+        if let final = searchingElapsedFinal,
+            stage == .generating || stage == .complete || stage == .idle
+        {
             return final
         }
         guard let start = searchingStart else { return searchingElapsedFinal }
@@ -293,7 +297,7 @@ struct ChatScreen: View {
         }
         return generatingElapsedFinal
     }
-    
+
     // MARK: - Execution Context mapping
     private var executionContext: ExecutionContext {
         switch executionContextRaw {
@@ -304,7 +308,7 @@ struct ChatScreen: View {
         default: return .automatic
         }
     }
-    
+
     // MARK: - Send Message
     private func newChat() {
         messages.removeAll()
@@ -325,7 +329,7 @@ struct ChatScreen: View {
         toasts.removeAll()
         showRetrievedDetails = false
     }
-    
+
     private func clearChat() {
         messages.removeAll()
         streamingText = ""
@@ -341,25 +345,26 @@ struct ChatScreen: View {
         toasts.removeAll()
         showRetrievedDetails = false
     }
-    
+
     private func sendMessage(_ text: String) {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
-        
+
         // Append user message with selected container (override or active)
         var userMessage = ChatMessage(role: .user, content: query)
-        let usedContainerId = messageContainerOverride ?? ragService.containerService.activeContainerId
+        let usedContainerId =
+            messageContainerOverride ?? ragService.containerService.activeContainerId
         userMessage.containerId = usedContainerId
         messages.append(userMessage)
         // Reset override after one use
         self.messageContainerOverride = nil
-        
+
         // Reset and start processing
         isProcessing = true
         stage = .embedding
         execution = .unknown
         ttft = nil
-        
+
         // Capture values for async task (query may be clarified asynchronously)
         let capturedTopK = retrievalTopK
         let capturedMaxTokens = maxTokens
@@ -369,7 +374,7 @@ struct ChatScreen: View {
         let capturedService = ragService
         let capturedUsedContainerId = usedContainerId
         streamingText = ""
-        
+
         Task(priority: .userInitiated) {
             do {
                 // Clarify the user's query using Writing Tools if available (improves retrieval quality)
@@ -377,7 +382,7 @@ struct ChatScreen: View {
                 if let clarified = try? await WritingToolsService().clarifyQuery(query) {
                     capturedQuery = clarified
                 }
-                
+
                 // Stage 1: Embedding
                 await MainActor.run {
                     self.stage = .embedding
@@ -387,10 +392,11 @@ struct ChatScreen: View {
                     self.searchingElapsedFinal = nil
                     self.generatingStartTS = nil
                     self.generatingElapsedFinal = nil
-                    self.pushToast("Embedding started", icon: "brain.head.profile", tint: DSColors.accent)
+                    self.pushToast(
+                        "Embedding started", icon: "brain.head.profile", tint: DSColors.accent)
                 }
                 try? await Task.sleep(nanoseconds: 250_000_000)
-                
+
                 // Stage 2: Searching
                 await MainActor.run {
                     self.stage = .searching
@@ -398,9 +404,10 @@ struct ChatScreen: View {
                     if let embStart = self.embeddingStart {
                         self.embeddingElapsedFinal = Date().timeIntervalSince(embStart)
                     }
-                    self.pushToast("Searching top \(capturedTopK)", icon: "magnifyingglass", tint: .green)
+                    self.pushToast(
+                        "Searching top \(capturedTopK)", icon: "magnifyingglass", tint: .green)
                 }
-                
+
                 let config = InferenceConfig(
                     maxTokens: capturedMaxTokens,
                     temperature: Float(capturedTemperature),
@@ -410,7 +417,7 @@ struct ChatScreen: View {
                     executionContext: capturedExecutionContext,
                     allowPrivateCloudCompute: capturedAllowPCC
                 )
-                
+
                 // Stage 3: Generating
                 await MainActor.run {
                     self.stage = .generating
@@ -421,7 +428,7 @@ struct ChatScreen: View {
                     }
                     self.pushToast("Generating…", icon: "sparkles", tint: DSColors.accent)
                 }
-                
+
                 let response = try await capturedService.query(
                     capturedQuery,
                     topK: capturedTopK,
@@ -437,23 +444,28 @@ struct ChatScreen: View {
                         }
                     }
                 )
-                
+
                 await MainActor.run {
                     self.currentRetrievedChunks = response.retrievedChunks
                     self.currentMetadata = response.metadata
-                    self.pushToast("Found \(response.retrievedChunks.count) source\(response.retrievedChunks.count == 1 ? "" : "s")", icon: "doc.text.magnifyingglass", tint: .green)
+                    self.pushToast(
+                        "Found \(response.retrievedChunks.count) source\(response.retrievedChunks.count == 1 ? "" : "s")",
+                        icon: "doc.text.magnifyingglass", tint: .green)
                 }
-                
+
                 // Update execution badge based on TTFT heuristic
                 if let first = response.metadata.timeToFirstToken {
                     await MainActor.run {
                         self.ttft = first
                         self.execution = first < 1.0 ? .onDevice : .privateCloudCompute
-                        let ttftString = first < 1.0 ? String(format: "%.0f ms", first * 1000) : String(format: "%.2f s", first)
+                        let ttftString =
+                            first < 1.0
+                            ? String(format: "%.0f ms", first * 1000)
+                            : String(format: "%.2f s", first)
                         self.pushToast("TTFT \(ttftString)", icon: "timer", tint: DSColors.accent)
                     }
                 }
-                
+
                 var assistant = ChatMessage(
                     role: .assistant,
                     content: response.generatedResponse,
@@ -461,15 +473,15 @@ struct ChatScreen: View {
                     retrievedChunks: response.retrievedChunks
                 )
                 assistant.containerId = capturedUsedContainerId
-                
+
                 await MainActor.run {
                     self.streamingText = ""
                     self.messages.append(assistant)
                     self.stage = .complete
                 }
-                
+
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                
+
                 await MainActor.run {
                     if let genStart = self.generatingStartTS {
                         self.generatingElapsedFinal = Date().timeIntervalSince(genStart)
@@ -488,15 +500,15 @@ struct ChatScreen: View {
             }
         }
     }
-    
+
     // MARK: - Toasts
-    
+
     private func pushToast(_ title: String, icon: String, tint: Color) {
         // Toast UI disabled for layout stabilization
         // Intentionally no-op to avoid any overlay/stack interference
     }
 }
- 
+
 // MARK: - Header
 
 struct ChatHeader: View {
@@ -614,17 +626,25 @@ struct MessageListEmptyContent: View {
                         .font(.title3)
                         .fontWeight(.bold)
 
-                    Text("A modern, modular interface is being enabled behind a feature flag. This is the initial scaffold.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
+                    Text(
+                        "A modern, modular interface is being enabled behind a feature flag. This is the initial scaffold."
+                    )
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    ChatV2FeatureRow(icon: "brain.head.profile", title: "Semantic Search", description: "Context-aware retrieval from your documents.")
-                    ChatV2FeatureRow(icon: "sparkles", title: "AI Generation", description: "Grounded answers with clear citations.")
-                    ChatV2FeatureRow(icon: "lock.shield", title: "Privacy First", description: "On-Device or Private Cloud Compute.")
+                    ChatV2FeatureRow(
+                        icon: "brain.head.profile", title: "Semantic Search",
+                        description: "Context-aware retrieval from your documents.")
+                    ChatV2FeatureRow(
+                        icon: "sparkles", title: "AI Generation",
+                        description: "Grounded answers with clear citations.")
+                    ChatV2FeatureRow(
+                        icon: "lock.shield", title: "Privacy First",
+                        description: "On-Device or Private Cloud Compute.")
                 }
                 .padding(.horizontal, 32)
                 .padding(.top, 8)
@@ -705,6 +725,6 @@ struct ComposerStub: View {
         ChatScreen(ragService: RAGService())
     }
     #if os(iOS)
-    .navigationViewStyle(.stack)
+        .navigationViewStyle(.stack)
     #endif
 }

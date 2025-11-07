@@ -1,1508 +1,883 @@
-//
-//  ModelManagerView.swift
-//  RAGMLCore
-//
-//  Created by Gunnar Hostetler on 10/9/25.
-//
-
+import Combine
 import SwiftUI
 
+@MainActor
 struct ModelManagerView: View {
     @ObservedObject var ragService: RAGService
     @EnvironmentObject private var settings: SettingsStore
-    @State private var availableModels: [LLMModel] = []
-    @State private var selectedModel: LLMModel?
-    @State private var showingModelInfo = false
     @State private var deviceCapabilities = DeviceCapabilities()
+    @State private var availableModels: [LLMModel] = []
+    @State private var showingCustomModelHelp = false
+    @State private var showingComparison = false
+    @State private var didLoad = false
     @StateObject private var downloadService = ModelDownloadService.shared
     @StateObject private var modelRegistry = ModelRegistry.shared
-    
+
     var body: some View {
-        ZStack {
-            // Premium gradient background
-            LinearGradient(
-                colors: [
-                    DSColors.background,
-                    DSColors.surface.opacity(0.95),
-                    DSColors.background.opacity(0.85)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-            
-            ScrollView {
-                LazyVStack(spacing: 20, pinnedViews: []) {
-                    // Hero Status Card
-                    ragPipelineStatusCard
-                    
-                    // Intelligence Stack
-                    intelligenceStackCard
-                    
-                    // Active RAG Configuration
-                    ragConfigurationCard
-                    
-                    // Device Capabilities (Compact)
-                    deviceCapabilitiesCard
-                    
-                    // Performance Metrics
-                    performanceMetricsCard
+        List {
+            overviewSection
 
-                    // Model Gallery (Downloads)
-                    modelGalleryCard
-
-                    // Installed Models
-                    installedModelsCard
-                    
-                    // Available Models (Focused)
-                    availableModelsCard
-                }
-                .padding(.vertical, 24)
-                .padding(.horizontal, 20)
+            if !activeDownloads.isEmpty {
+                downloadsSection
             }
+
+            installedModelsSection
+            availableModelsSection
+            toolsSection
         }
-        .navigationTitle("RAG Intelligence")
-        #if os(iOS)
+        .listStyle(.insetGrouped)
+        .navigationTitle("Model Manager")
         .navigationBarTitleDisplayMode(.large)
+        .task { await prepareOnce() }
+        .sheet(isPresented: $showingCustomModelHelp) { CustomModelInstructionsView() }
+        .sheet(isPresented: $showingComparison) {
+            ModelComparisonSheet(
+                deviceCapabilities: deviceCapabilities,
+                installedModels: modelRegistry.installed
+            )
+        }
+        .onReceive(modelRegistry.$installed) { _ in
+            refreshAvailableModels()
+        }
+    }
+
+    private var activeDownloads: [DownloadState] {
+        downloadService.downloads.values
+            .filter { state in
+                switch state.status {
+                case .downloading, .verifying, .registering:
+                    return true
+                default:
+                    return false
+                }
+            }
+            .sorted { $0.progress > $1.progress }
+    }
+
+    private var overviewSection: some View {
+        Section("Overview") {
+            StatusSummaryView(
+                currentModel: ragService.currentModelName,
+                documents: ragService.documents.count,
+                chunks: ragService.totalChunksStored,
+                storage: estimatedMemoryUsage
+            )
+
+            DeviceSupportView(capabilities: deviceCapabilities)
+        }
+    }
+
+    private var downloadsSection: some View {
+        Section("Active Downloads") {
+            ForEach(activeDownloads, id: \.id) { state in
+                ActiveDownloadRow(
+                    state: state,
+                    onPause: { downloadService.pause(entryID: state.id) },
+                    onResume: { downloadService.resume(entryID: state.id) },
+                    onCancel: { downloadService.cancel(entryID: state.id) }
+                )
+            }
+        }
+    }
+
+    private var installedModelsSection: some View {
+        Section("Installed Models") {
+            if modelRegistry.installed.isEmpty {
+                Text("No downloaded models yet. Open the gallery to grab one.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(modelRegistry.installed.filter { $0.backend != .mlxServer }) { model in
+                    InstalledModelRow(
+                        model: model,
+                        isActive: isModelActive(model),
+                        onActivate: { Task { await activate(model) } },
+                        onRemove: { Task { await remove(model) } },
+                        formatFileSize: formatFileSize
+                    )
+                }
+            }
+        }
+    }
+
+    private var availableModelsSection: some View {
+        Section("Available Sources") {
+            if availableModels.isEmpty {
+                Text("Loading available models...")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(availableModels) { model in
+                    AvailableModelRow(model: model)
+                }
+            }
+        }
+    }
+
+    private var toolsSection: some View {
+        Section("Tools") {
+            NavigationLink {
+                ModelGalleryScreen(ragService: ragService)
+            } label: {
+                Label("Open Model Gallery", systemImage: "tray.and.arrow.down")
+            }
+
+            Button {
+                showingComparison = true
+            } label: {
+                Label("Compare Models", systemImage: "chart.bar.doc.horizontal")
+            }
+
+            Button {
+                showingCustomModelHelp = true
+            } label: {
+                Label("Custom Model Instructions", systemImage: "questionmark.circle")
+            }
+        }
+    }
+
+    @MainActor
+    private func prepareOnce() async {
+        guard !didLoad else { return }
+        didLoad = true
+        // Capture device capabilities up front so the status cards and available list are in sync.
+        deviceCapabilities = RAGService.checkDeviceCapabilities()
+        refreshAvailableModels()
+        if downloadService.catalog.isEmpty {
+            await downloadService.loadCatalog(from: nil)
+        }
+    }
+
+    @MainActor
+    private func activate(_ model: InstalledModel) async {
+        // Drive the shared activation path so telemetry and auto-tune hooks stay consistent.
+        await ModelActivationService.activate(model, ragService: ragService, settings: settings)
+        refreshAvailableModels()
+    }
+
+    @MainActor
+    private func remove(_ model: InstalledModel) async {
+        // Remove the cartridge, clean up persisted selection, and re-evaluate availability badges.
+        ModelRegistry.shared.remove(model, deleteFromDisk: true)
+        clearSelectionIfNeeded(for: model)
+        refreshAvailableModels()
+    }
+
+    @MainActor
+    private func refreshAvailableModels() {
+        // Rebuild the catalog of built-in pathways so UI state reflects current installs and hardware support.
+        var items: [LLMModel] = []
+        items.append(contentsOf: foundationModels())
+        items.append(onDeviceAnalysisModel())
+        if let coreML = coreMLModel() {
+            items.append(coreML)
+        }
+        availableModels = items
+    }
+
+    @MainActor
+    private func foundationModels() -> [LLMModel] {
+        var models: [LLMModel] = []
+        let tokens = deviceCapabilities.appleIntelligenceContextTokens
+        let contextDescription =
+            deviceCapabilities.appleIntelligenceContextDescription ?? "Unavailable on this device."
+        let availability = deviceCapabilities.supportsFoundationModels
+        let note =
+            availability
+            ? "Runs on-device with automatic Private Cloud Compute expansion for longer prompts."
+            : (deviceCapabilities.appleIntelligenceUnavailableReason
+                ?? "Requires supported Apple Silicon hardware.")
+
+        models.append(
+            LLMModel(
+                name: "Apple Intelligence",
+                modelType: .appleHybrid,
+                parameterCount: "System managed",
+                quantization: "Neural Engine optimised",
+                contextLength: tokens,
+                contextDescription: contextDescription,
+                availabilityNote: note,
+                isAvailable: availability
+            )
+        )
+
+        #if os(iOS)
+            if #available(iOS 18.1, *), deviceCapabilities.supportsAppleIntelligence {
+                let chatGPTNote =
+                    deviceCapabilities.appleIntelligenceUnavailableReason
+                    ?? "Enable ChatGPT under Apple Intelligence & Siri settings."
+                models.append(
+                    LLMModel(
+                        name: "ChatGPT (Apple Intelligence)",
+                        modelType: .appleChatGPT,
+                        parameterCount: "System managed",
+                        quantization: nil,
+                        contextLength: tokens,
+                        contextDescription: "System-level consent driven ChatGPT access.",
+                        availabilityNote: chatGPTNote,
+                        isAvailable: true
+                    )
+                )
+            }
         #endif
-        .onAppear {
-            DispatchQueue.main.async {
-                let caps = RAGService.checkDeviceCapabilities()
-                deviceCapabilities = caps
-                loadAvailableModels()
-                Task {
-                    await ModelDownloadService.shared.loadCatalog(from: nil)
-                    await ModelRegistry.shared.load()
-                }
-            }
-        }
-        .sheet(isPresented: $showingModelInfo) {
-            CustomModelInstructionsView()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            loadAvailableModels()
-        }
+
+        return models
     }
 
-    // MARK: - Section Builders
-    
-    @ViewBuilder
-    private var ragPipelineStatusCard: some View {
-        VStack(spacing: 0) {
-            // Hero gradient header
-            ZStack {
-                LinearGradient(
-                    colors: [
-                        Color.accentColor.opacity(0.8),
-                        Color.accentColor.opacity(0.5)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                
-                VStack(spacing: 16) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 56, weight: .light))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.white, .white.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    
-                    Text("RAG Pipeline Active")
-                        .font(.title2.bold())
-                        .foregroundColor(.white)
-                    
-                    Text(ragService.isLLMAvailable ? "Ready for Intelligent Queries" : "Configuration Required")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.9))
-                }
-                .padding(.vertical, 32)
-            }
-            .frame(maxWidth: .infinity)
-            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20))
-            
-            // Stats grid
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    QuickStatCell(
-                        value: "\(ragService.documents.count)",
-                        label: "Documents",
-                        icon: "doc.text.fill",
-                        color: .blue
-                    )
-                    
-                    Divider()
-                    
-                    QuickStatCell(
-                        value: "\(ragService.totalChunksStored)",
-                        label: "Chunks",
-                        icon: "square.stack.3d.up.fill",
-                        color: .purple
-                    )
-                }
-                .frame(height: 90)
-                
-                Divider()
-                
-                HStack(spacing: 0) {
-                    QuickStatCell(
-                        value: estimatedMemoryUsage,
-                        label: "Memory",
-                        icon: "memorychip",
-                        color: .orange
-                    )
-                    
-                    Divider()
-                    
-                    QuickStatCell(
-                        value: "512-dim",
-                        label: "Embeddings",
-                        icon: "waveform.path.ecg",
-                        color: .green
-                    )
-                }
-                .frame(height: 90)
-            }
-            .background(DSColors.surface)
-            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 20, bottomTrailingRadius: 20))
-        }
-        .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 8)
-    }
-    
-    @ViewBuilder
-    private var intelligenceStackCard: some View {
-        ModelManagerCardView(icon: "sparkles", title: "Intelligence Stack", caption: "RAG Pipeline Layers") {
-            VStack(spacing: 14) {
-                IntelligenceLayerRow(
-                    number: 1,
-                    icon: "doc.viewfinder.fill",
-                    title: "Document Processing",
-                    status: .active,
-                    detail: "PDFKit + Vision OCR → Semantic Chunking"
-                )
-                
-                IntelligenceLayerRow(
-                    number: 2,
-                    icon: "chart.bar.doc.horizontal",
-                    title: "Embedding Generation",
-                    status: .active,
-                    detail: "NLEmbedding (Word2Vec) → 512-dim vectors"
-                )
-                
-                IntelligenceLayerRow(
-                    number: 3,
-                    icon: "cylinder.fill",
-                    title: "Vector Database",
-                    status: .active,
-                    detail: "Cosine similarity search → Top-K retrieval"
-                )
-                
-                IntelligenceLayerRow(
-                    number: 4,
-                    icon: ragService.isLLMAvailable ? "brain.head.profile" : "exclamationmark.triangle.fill",
-                    title: "LLM Generation",
-                    status: ragService.isLLMAvailable ? .active : .warning,
-                    detail: ragService.currentModelName
-                )
-                
-                if deviceCapabilities.supportsPrivateCloudCompute && ragService.isLLMAvailable {
-                    Divider()
-                    HStack(spacing: 8) {
-                        Image(systemName: "cloud.fill")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                        Text("Automatic PCC Fallback Enabled")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var ragConfigurationCard: some View {
-        ModelManagerCardView(icon: "gearshape.2.fill", title: "Active Configuration", caption: "Current RAG settings") {
-            VStack(spacing: 12) {
-                ConfigRow(
-                    icon: "brain.head.profile",
-                    label: "Primary Model",
-                    value: ragService.currentModelName,
-                    accent: .accentColor
-                )
-                
-                ConfigRow(
-                    icon: "arrow.down.doc.fill",
-                    label: "Retrieval Strategy",
-                    value: "Top-\(UserDefaults.standard.integer(forKey: "retrievalTopK") > 0 ? UserDefaults.standard.integer(forKey: "retrievalTopK") : 3) chunks",
-                    accent: .purple
-                )
-                
-                ConfigRow(
-                    icon: "thermometer.medium",
-                    label: "Temperature",
-                    value: String(format: "%.2f", UserDefaults.standard.double(forKey: "llmTemperature") > 0 ? UserDefaults.standard.double(forKey: "llmTemperature") : 0.7),
-                    accent: .orange
-                )
-                
-                ConfigRow(
-                    icon: "text.word.spacing",
-                    label: "Max Tokens",
-                    value: "\(UserDefaults.standard.integer(forKey: "llmMaxTokens") > 0 ? UserDefaults.standard.integer(forKey: "llmMaxTokens") : 500)",
-                    accent: .blue
-                )
-                
-                if deviceCapabilities.supportsPrivateCloudCompute {
-                    ConfigRow(
-                        icon: "cloud.fill",
-                        label: "Execution Mode",
-                        value: executionModeDisplay,
-                        accent: .green
-                    )
-                }
-                
-                Divider()
-                
-                Button {
-                    // Navigate to settings
-                } label: {
-                    HStack {
-                        Text("Modify in Settings")
-                            .font(.subheadline.weight(.medium))
-                        Spacer()
-                        Image(systemName: "arrow.right.circle.fill")
-                    }
-                    .foregroundColor(.accentColor)
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var deviceCapabilitiesCard: some View {
-        ModelManagerCardView(icon: "cpu", title: "Device Intelligence", caption: deviceCapabilities.deviceChip.rawValue) {
-            VStack(spacing: 10) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(deviceCapabilities.deviceTier.description.uppercased() + " TIER")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(deviceTierColor)
-                        Text(deviceCapabilities.deviceChip.performanceRating)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Text("iOS \(deviceCapabilities.iOSVersion)")
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(DSColors.surface)
-                        .cornerRadius(8)
-                }
-                
-                Divider()
-                
-                VStack(spacing: 6) {
-                    CompactCapabilityRow(
-                        icon: deviceCapabilities.supportsFoundationModels ? "brain.head.profile" : "sparkles",
-                        label: deviceCapabilities.supportsFoundationModels ? "Foundation Models" : "Apple Intelligence",
-                        isSupported: deviceCapabilities.supportsFoundationModels || deviceCapabilities.supportsAppleIntelligence
-                    )
-                    
-                    CompactCapabilityRow(
-                        icon: "cloud.fill",
-                        label: "Private Cloud Compute",
-                        isSupported: deviceCapabilities.supportsPrivateCloudCompute
-                    )
-                    
-                    CompactCapabilityRow(
-                        icon: "cpu",
-                        label: "Neural Engine",
-                        isSupported: deviceCapabilities.hasNeuralEngine
-                    )
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var performanceMetricsCard: some View {
-        ModelManagerCardView(icon: "gauge.with.dots.needle.67percent", title: "Performance Metrics", caption: "Real-time system stats") {
-            VStack(spacing: 10) {
-                if let lastSummary = ragService.lastProcessingSummary {
-                    MetricRow(
-                        label: "Last Processing Time",
-                        value: String(format: "%.2fs", lastSummary.totalTime),
-                        icon: "clock.arrow.circlepath",
-                        color: .pink
-                    )
-                    
-                    MetricRow(
-                        label: "Average Chunk Size",
-                        value: "\(lastSummary.chunkStats.avgChars) chars",
-                        icon: "text.alignleft",
-                        color: .indigo
-                    )
-                }
-                
-                MetricRow(
-                    label: "Vector Store Size",
-                    value: estimatedMemoryUsage,
-                    icon: "externaldrive.fill",
-                    color: .teal
-                )
-                
-                MetricRow(
-                    label: "Embedding Model",
-                    value: "NLEmbedding (Word2Vec)",
-                    icon: "function",
-                    color: .purple
-                )
-                
-                if deviceCapabilities.hasNeuralEngine {
-                    MetricRow(
-                        label: "Neural Engine",
-                        value: deviceCapabilities.deviceChip.neuralEnginePerformance,
-                        icon: "cpu.fill",
-                        color: .green
-                    )
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var modelGalleryCard: some View {
-        ModelManagerCardView(icon: "tray.and.arrow.down.fill", title: "Model Gallery", caption: "Tap to download curated on-device models") {
-            VStack(spacing: 12) {
-                if downloadService.isLoadingCatalog {
-                    HStack {
-                        ProgressView()
-                        Text("Loading models...")
-                            .foregroundColor(.secondary)
-                            .font(.subheadline)
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                } else if let err = downloadService.catalogError {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
-                        Text(err)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-                    .padding(.vertical, 8)
-                } else if downloadService.catalog.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "tray")
-                            .font(.largeTitle)
-                            .foregroundColor(.secondary)
-                        Text("No models available")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-                } else {
-                    ForEach(downloadService.catalog) { entry in
-                        DownloadableModelRow(
-                            entry: entry,
-                            state: downloadService.downloads[entry.id],
-                            onDownload: { downloadService.download(entry: entry) },
-                            onPause: { downloadService.pause(entryID: entry.id) },
-                            onResume: { downloadService.resume(entryID: entry.id) },
-                            onCancel: { downloadService.cancel(entryID: entry.id) },
-                            formatBytes: formatBytes,
-                            downloadSpeedAndETA: downloadSpeedAndETA
-                        )
-                        if entry.id != downloadService.catalog.last?.id { 
-                            Divider()
-                                .padding(.vertical, 4)
-                        }
-                    }
-                }
-            }
-        }
+    private func onDeviceAnalysisModel() -> LLMModel {
+        LLMModel(
+            name: "On-Device Analysis",
+            modelType: .onDeviceAnalysis,
+            parameterCount: "Extractive QA",
+            quantization: "Deterministic",
+            contextLength: 0,
+            contextDescription: "Answers straight from retrieved text without generation.",
+            availabilityNote: "Always available, no setup required.",
+            isAvailable: true
+        )
     }
 
-    @ViewBuilder
-    private var installedModelsCard: some View {
-        ModelManagerCardView(icon: "shippingbox.fill", title: "Installed Models", caption: "Hot‑swappable cartridges") {
-            VStack(spacing: 10) {
-                if modelRegistry.all().isEmpty {
-                    Text("No local models installed yet. Use the Model Gallery to download.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.vertical, 8)
-                } else {
-                    ForEach(modelRegistry.all()) { installed in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Image(systemName: {
-                                    switch installed.backend {
-                                    case .gguf: return "doc.badge.gearshape"
-                                    case .coreML: return "cpu"
-                                    case .mlxServer: return "server.rack"
-                                    }
-                                }())
-                                .foregroundColor(.accentColor)
-                                Text(installed.name)
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer()
-                                if let vendor = installed.vendor {
-                                    Text(vendor)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            HStack(spacing: 10) {
-                                if let size = installed.sizeBytes {
-                                    Label(formatBytes(size), systemImage: "externaldrive.fill")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                if let q = installed.quantization {
-                                    Label(q, systemImage: "cpu")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                Label(installed.backend.displayName, systemImage: installed.backend.iconName)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            HStack(spacing: 10) {
-                                switch installed.backend {
-                                case .gguf:
-                                    if let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) {
-                                        Button {
-                                            Task {
-                                                await ModelActivationService.activate(installed, ragService: ragService, settings: settings)
-                                                await MainActor.run { loadAvailableModels() }
-                                            }
-                                        } label: {
-                                            Label("Make Active", systemImage: "play.circle.fill")
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .controlSize(.small)
-                                    } else {
-                                        Button {
-                                            // disabled placeholder
-                                        } label: {
-                                            Label("Missing File", systemImage: "exclamationmark.triangle")
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        .disabled(true)
-                                    }
-                                case .coreML:
-                                    if let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) {
-                                        Button {
-                                            Task {
-                                                await ModelActivationService.activate(installed, ragService: ragService, settings: settings)
-                                                await MainActor.run { loadAvailableModels() }
-                                            }
-                                        } label: {
-                                            Label("Make Active", systemImage: "play.circle")
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .controlSize(.small)
-                                    } else {
-                                        Button {
-                                            // disabled placeholder
-                                        } label: {
-                                            Label("Configure", systemImage: "gear")
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        .disabled(true)
-                                    }
-                                case .mlxServer:
-                                    Button {
-                                        // Future activation flow for MLX servers
-                                    } label: {
-                                        Label("Not Supported Yet", systemImage: "ellipsis.circle")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .disabled(true)
-                                }
+    private func coreMLModel() -> LLMModel? {
+        guard deviceCapabilities.supportsCoreML else { return nil }
+        let hasRegistryModel = modelRegistry.installed.contains { $0.backend == .coreML }
+        let isReady = hasRegistryModel || CoreMLLLMService.selectionIsReady()
+        guard isReady else { return nil }
 
-                                Button(role: .destructive) {
-                                    modelRegistry.remove(id: installed.id)
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        }
-                        .padding(.vertical, 6)
-                        if installed.id != modelRegistry.all().last?.id { Divider() }
-                    }
-                }
-            }
-        }
+        let note = hasRegistryModel
+            ? "Ready to run using the Neural Engine."
+            : "Previously imported Core ML package detected."
+        return LLMModel(
+            name: "Core ML (.mlpackage)",
+            modelType: .coreMLPackage,
+            parameterCount: "Varies",
+            quantization: "Core ML runtime",
+            contextLength: 8_000,
+            contextDescription: "Bring-your-own Core ML LLM.",
+            availabilityNote: note,
+            isAvailable: isReady
+        )
     }
 
-    @ViewBuilder
-    private var availableModelsCard: some View {
-        ModelManagerCardView(icon: "server.rack", title: "Available Models", caption: "Ready for RAG queries") {
-            VStack(spacing: 12) {
-                if availableModels.isEmpty {
-                    Text("Loading model information...")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .padding(.vertical, 20)
-                } else {
-                    ForEach(availableModels) { model in
-                        ModernModelRow(model: model)
-                        if model.id != availableModels.last?.id {
-                            Divider()
-                        }
-                    }
-                }
-                
-                Divider()
-                
-                Button {
-                    showingModelInfo = true
-                } label: {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Custom Model")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.secondary)
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundColor(.accentColor)
-                }
-            }
-        }
-    }
-    
-     // MARK: - Helper Properties & Methods
-
-    private func splitOwnerRepo(_ input: String) -> (String, String)? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let comps = trimmed.split(separator: "/").map(String.init)
-        guard comps.count == 2, !comps[0].isEmpty, !comps[1].isEmpty else { return nil }
-        return (comps[0], comps[1])
-    }
-
-    private func formatBytes(_ bytes: Int64?) -> String {
-        guard let bytes = bytes else { return "—" }
-        if bytes < 1024 { return "\(bytes) B" }
-        let kb = Double(bytes) / 1024.0
-        if kb < 1024.0 { return String(format: "%.1f KB", kb) }
-        let mb = kb / 1024.0
-        if mb < 1024.0 { return String(format: "%.2f MB", mb) }
-        let gb = mb / 1024.0
-        return String(format: "%.2f GB", gb)
-    }
-
-    private func formatBytesDouble(_ bytes: Double) -> String {
-        if bytes < 1024 { return String(format: "%.0f B", bytes) }
-        let kb = bytes / 1024.0
-        if kb < 1024.0 { return String(format: "%.1f KB", kb) }
-        let mb = kb / 1024.0
-        if mb < 1024.0 { return String(format: "%.2f MB", mb) }
-        let gb = mb / 1024.0
-        return String(format: "%.2f GB", gb)
-    }
-
-    private func formatTime(_ seconds: Double) -> String {
-        if seconds.isNaN || seconds.isInfinite { return "—" }
-        let s = Int(max(0, seconds))
-        let h = s / 3600
-        let m = (s % 3600) / 60
-        let sec = s % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, sec)
-        } else {
-            return String(format: "%d:%02d", m, sec)
-        }
-    }
-
-    private func downloadSpeedAndETA(for st: DownloadState) -> String {
-        guard let bps = st.averageBytesPerSecond, bps > 0 else { return "Calculating…" }
-        let remaining = max(0, st.totalBytes - st.bytesWritten)
-        let etaSec = bps > 0 ? Double(remaining) / bps : 0
-        return "\(formatBytesDouble(bps))/s • \(formatTime(etaSec))"
-    }
-    
-    private var executionModeDisplay: String {
-        let rawValue = UserDefaults.standard.string(forKey: "executionContext") ?? "automatic"
-        switch rawValue {
-        case "automatic": return "Automatic (Hybrid)"
-        case "onDeviceOnly": return "On-Device Only"
-        case "preferCloud": return "Prefer Cloud"
-        case "cloudOnly": return "Cloud Only"
-        default: return "Automatic"
-        }
-    }
-    
-    private var deviceTierColor: Color {
-        switch deviceCapabilities.deviceTier {
-        case .high:
-            return .green
-        case .medium:
-            return .blue
-        case .low:
-            return .orange
-        }
-    }
-    
     private var estimatedMemoryUsage: String {
-        // Each chunk: 512 floats (4 bytes each) + metadata (~500 bytes)
         let bytesPerChunk = (512 * 4) + 500
         let totalBytes = bytesPerChunk * ragService.totalChunksStored
-        
-        if totalBytes < 1024 {
-            return "\(totalBytes) B"
-        } else if totalBytes < 1024 * 1024 {
-            return String(format: "%.1f KB", Double(totalBytes) / 1024.0)
-        } else {
-            return String(format: "%.2f MB", Double(totalBytes) / (1024.0 * 1024.0))
-        }
-    }
-    
-    private func loadAvailableModels() {
-        var models: [LLMModel] = []
-        let foundationAvailable = deviceCapabilities.supportsFoundationModels
-        let appleContextTokens = deviceCapabilities.appleIntelligenceContextTokens
-        let appleContextDescription = deviceCapabilities.appleIntelligenceContextDescription ?? "Not available on this device."
-
-        let foundationNote: String
-        if foundationAvailable {
-            foundationNote = "Neural Engine (\(deviceCapabilities.deviceChip.neuralEnginePerformance)) handles on-device context; PCC expands automatically for complex or lengthy prompts."
-        } else if deviceCapabilities.supportsAppleIntelligence {
-            foundationNote = deviceCapabilities.appleIntelligenceUnavailableReason ?? "Apple Intelligence enabled; Foundation Models are still preparing on this device."
-        } else {
-            foundationNote = deviceCapabilities.appleIntelligenceUnavailableReason ?? "Requires iOS 18.1+ and A17 Pro, A18, or M-series hardware."
-        }
-        models.append(
-            LLMModel(
-                name: "Apple Intelligence (Hybrid)",
-                modelType: .appleHybrid,
-                parameterCount: "~3B on-device / server-grade in PCC",
-                quantization: "Neural Engine optimized",
-                contextLength: appleContextTokens,
-                contextDescription: appleContextTokens > 0 ? appleContextDescription : "Not available on this device.",
-                availabilityNote: foundationNote,
-                isAvailable: foundationAvailable
-            )
-        )
-
-        #if canImport(AppIntents)
-        if #available(iOS 18.1, macOS 15.1, *), deviceCapabilities.supportsAppleIntelligence {
-            let chatGPTNote = deviceCapabilities.appleIntelligenceUnavailableReason ?? "Enable ChatGPT in Settings → Apple Intelligence & Siri to activate system-managed access."
-            models.append(
-                LLMModel(
-                    name: "ChatGPT (Apple Intelligence)",
-                    modelType: .appleChatGPT,
-                    parameterCount: "System-managed",
-                    quantization: "Apple Intelligence service",
-                    contextLength: appleContextTokens,
-                    contextDescription: "System-level ChatGPT with Apple consent prompts and Private Cloud Compute safeguards.",
-                    availabilityNote: chatGPTNote,
-                    isAvailable: deviceCapabilities.supportsAppleIntelligence
-                )
-            )
-        }
-        #endif
-
-        let extractiveNote = "Extracts answers directly from retrieved text without generative hallucinations."
-        models.append(
-            LLMModel(
-                name: "On-Device Analysis (Extractive QA)",
-                modelType: .onDeviceAnalysis,
-                parameterCount: "N/A",
-                quantization: "Deterministic",
-                contextLength: max(appleContextTokens, 900),
-                contextDescription: "Uses similarity search only; ideal offline fallback when generative models are unavailable.",
-                availabilityNote: extractiveNote,
-                isAvailable: true
-            )
-        )
-
-        if deviceCapabilities.supportsCoreML {
-            let hasCoreML = modelRegistry.installed.contains { $0.backend == .coreML }
-            let coreMLNote = hasCoreML ? "Custom Core ML packages ready for offline inference." : "Import a .mlpackage via Files to enable custom Core ML models."
-            models.append(
-                LLMModel(
-                    name: "Core ML (Custom Package)",
-                    modelType: .coreMLPackage,
-                    parameterCount: "Varies",
-                    quantization: "Core ML runtime",
-                    contextLength: 8_000,
-                    contextDescription: "Bring your own converted Core ML LLM (.mlpackage).",
-                    availabilityNote: coreMLNote,
-                    isAvailable: hasCoreML
-                )
-            )
-        }
-
-        availableModels = models
+        guard totalBytes > 0 else { return "0 B" }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .memory
+        return formatter.string(fromByteCount: Int64(totalBytes))
     }
 
-}
-
-// MARK: - Supporting Components
-
-private struct QuickStatCell: View {
-    let value: String
-    let label: String
-    let icon: String
-    let color: Color
-    
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [color, color.opacity(0.7)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            
-            Text(value)
-                .font(.title3.bold())
-                .foregroundColor(.primary)
-            
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.secondary)
+    private func isModelActive(_ model: InstalledModel) -> Bool {
+        let defaults = UserDefaults.standard
+        switch model.backend {
+        case .gguf:
+            return defaults.string(forKey: LlamaCPPiOSLLMService.selectedModelIdKey)
+                == model.id.uuidString
+        case .coreML:
+            return defaults.string(forKey: CoreMLLLMService.selectedModelIdKey)
+                == model.id.uuidString
+        default:
+            return false
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+    }
+
+    @MainActor
+    private func clearSelectionIfNeeded(for model: InstalledModel) {
+        let defaults = UserDefaults.standard
+        switch model.backend {
+        case .gguf:
+            if defaults.string(forKey: LlamaCPPiOSLLMService.selectedModelIdKey)
+                == model.id.uuidString
+            {
+                LlamaCPPiOSLLMService.clearSelection()
+                if settings.selectedModel == .ggufLocal {
+                    settings.selectedModel =
+                        settings.primaryModelOptions.first ?? .appleIntelligence
+                }
+            }
+        case .coreML:
+            if defaults.string(forKey: CoreMLLLMService.selectedModelIdKey) == model.id.uuidString {
+                CoreMLLLMService.clearSelection()
+                if settings.selectedModel == .coreMLLocal {
+                    settings.selectedModel =
+                        settings.primaryModelOptions.first ?? .appleIntelligence
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private func formatFileSize(_ bytes: Int64?) -> String {
+        guard let bytes else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 
-private struct IntelligenceLayerRow: View {
-    let number: Int
-    let icon: String
-    let title: String
-    let status: LayerStatus
-    let detail: String
-    
-    enum LayerStatus {
-        case active, warning, inactive
-        
-        var color: Color {
-            switch self {
-            case .active: return .green
-            case .warning: return .orange
-            case .inactive: return .secondary
-            }
-        }
-        
-        var icon: String {
-            switch self {
-            case .active: return "checkmark.circle.fill"
-            case .warning: return "exclamationmark.triangle.fill"
-            case .inactive: return "circle"
-            }
-        }
-    }
-    
+private struct StatusSummaryView: View {
+    let currentModel: String
+    let documents: Int
+    let chunks: Int
+    let storage: String
+
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(status.color.opacity(0.15))
-                    .frame(width: 36, height: 36)
-                
-                Text("\(number)")
-                    .font(.caption.bold())
-                    .foregroundColor(status.color)
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text(currentModel)
+                    .font(.subheadline.weight(.medium))
+            } icon: {
+                Image(systemName: "brain.head.profile")
+                    .foregroundColor(.accentColor)
             }
-            
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(.accentColor)
-                .frame(width: 28)
-            
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+            HStack(spacing: 16) {
+                SummaryStat(title: "Documents", value: "\(documents)")
+                SummaryStat(title: "Chunks", value: "\(chunks)")
+                SummaryStat(title: "Vector Store", value: storage)
             }
-            
-            Spacer()
-            
-            Image(systemName: status.icon)
-                .foregroundColor(status.color)
-                .font(.body)
         }
         .padding(.vertical, 4)
     }
 }
 
-private struct ConfigRow: View {
+private struct SummaryStat: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.headline)
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+private struct DeviceSupportView: View {
+    let capabilities: DeviceCapabilities
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            CapabilityRow(
+                icon: "sparkles",
+                label: "Foundation Models",
+                available: capabilities.supportsFoundationModels,
+                detail: capabilities.deviceChip.rawValue
+            )
+
+            CapabilityRow(
+                icon: "cloud.fill",
+                label: "Private Cloud Compute",
+                available: capabilities.supportsPrivateCloudCompute,
+                detail: capabilities.supportsPrivateCloudCompute ? "Ready" : "Unavailable"
+            )
+
+            CapabilityRow(
+                icon: "cpu",
+                label: "Neural Engine",
+                available: capabilities.hasNeuralEngine,
+                detail: capabilities.deviceChip.neuralEnginePerformance
+            )
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct CapabilityRow: View {
     let icon: String
     let label: String
-    let value: String
-    let accent: Color
-    
+    let available: Bool
+    let detail: String
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.body)
-                .foregroundColor(accent)
-                .frame(width: 24)
-            
+                .foregroundColor(available ? .accentColor : .secondary)
             Text(label)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
-            
             Spacer()
-            
-            Text(value)
-                .font(.subheadline.weight(.medium))
-                .foregroundColor(.primary)
+            Text(available ? detail : "Off")
+                .font(.caption)
+                .foregroundColor(available ? .secondary : .orange)
         }
-        .padding(.vertical, 2)
     }
 }
 
-private struct CompactCapabilityRow: View {
-    let icon: String
-    let label: String
-    let isSupported: Bool
-    
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.body)
-                .foregroundColor(isSupported ? .accentColor : .secondary)
-                .frame(width: 24)
-            
-            Text(label)
-                .font(.subheadline)
-                .foregroundColor(isSupported ? .primary : .secondary)
-            
-            Spacer()
-            
-            Image(systemName: isSupported ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(isSupported ? .green : .red)
-                .font(.body)
-        }
-        .padding(.vertical, 2)
-    }
-}
+private struct ActiveDownloadRow: View {
+    let state: DownloadState
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onCancel: () -> Void
 
-private struct MetricRow: View {
-    let label: String
-    let value: String
-    let icon: String
-    let color: Color
-    
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.body)
-                .foregroundColor(color)
-                .frame(width: 24)
-            
-            Text(label)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-            
-            Spacer()
-            
-            Text(value)
-                .font(.subheadline.weight(.medium))
-                .foregroundColor(.primary)
-        }
-        .padding(.vertical, 2)
-    }
-}
+        VStack(alignment: .leading, spacing: 8) {
+            Text(state.entry.name)
+                .font(.subheadline.weight(.semibold))
 
-private struct ModernModelRow: View {
-    let model: LLMModel
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(model.isAvailable ? Color.accentColor.opacity(0.15) : DSColors.surface)
-                    .frame(width: 48, height: 48)
-                
-                Image(systemName: modelIcon)
-                    .font(.title3)
-                    .foregroundColor(model.isAvailable ? .accentColor : .secondary)
+            if case .downloading = state.status {
+                ProgressView(value: state.progress)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
             }
-            
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(model.name)
-                        .font(.headline)
-                    Spacer()
-                    if model.isAvailable {
-                        Text("Ready")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(6)
-                    } else {
-                        Text("Unavailable")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.orange.opacity(0.15))
-                            .foregroundColor(.orange)
-                            .cornerRadius(6)
+
+            HStack {
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+
+                if let primary = primaryAction {
+                    Button(action: primary.handler) {
+                        Image(systemName: primary.icon)
                     }
+                    .buttonStyle(.plain)
                 }
-                
-                if let contextDescription = model.contextDescription {
-                    Text(contextDescription)
+
+                if canCancel {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var statusText: String {
+        switch state.status {
+        case .downloading:
+            return String(format: "%.0f%%", state.progress * 100)
+        case .verifying:
+            return "Verifying"
+        case .registering:
+            return "Installing"
+        default:
+            return ""
+        }
+    }
+
+    private var canCancel: Bool {
+        switch state.status {
+        case .downloading, .paused:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var primaryAction: (handler: () -> Void, icon: String)? {
+        switch state.status {
+        case .downloading:
+            return ({ onPause() }, "pause.circle.fill")
+        case .paused:
+            return ({ onResume() }, "play.circle.fill")
+        default:
+            return nil
+        }
+    }
+}
+
+private struct InstalledModelRow: View {
+    let model: InstalledModel
+    let isActive: Bool
+    let onActivate: () -> Void
+    let onRemove: () -> Void
+    let formatFileSize: (Int64?) -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(model.name)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if isActive {
+                    Label("Active", systemImage: "checkmark.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Label(model.backend.displayName, systemImage: model.backend.iconName)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if let vendor = model.vendor {
+                    Text(vendor)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
                 }
-                
-                HStack(spacing: 10) {
-                    Label(formatContextLength(model.contextLength), systemImage: "doc.text")
-                        .font(.caption2)
+
+                if let quant = model.quantization {
+                    Text(quant)
+                        .font(.caption)
                         .foregroundColor(.secondary)
-                    
-                    if let quantization = model.quantization {
-                        Label(quantization, systemImage: "cpu")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
                 }
+
+                if let size = model.sizeBytes {
+                    Text(formatFileSize(size))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button("Activate", action: onActivate)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isActive)
+
+                Button("Remove", role: .destructive, action: onRemove)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
         }
         .padding(.vertical, 6)
     }
-    
-    private var modelIcon: String {
-        switch model.modelType {
-        case .appleFoundation:
-            return "brain.head.profile"
-        case .appleHybrid:
-            return "sparkles"
-        case .appleChatGPT:
-            return "bubble.left.and.sparkles"
-        case .openAI:
-            return "key.fill"
-        case .onDeviceAnalysis:
-            return "doc.text.magnifyingglass"
-        case .coreMLPackage:
-            return "cpu"
-        case .gguf:
-            return "doc.badge.gearshape"
-        }
-    }
-    
-    private func formatContextLength(_ length: Int) -> String {
-        if length <= 0 {
-            return "N/A"
-        }
-        if length >= 1000 {
-            return "\(length / 1000)K tokens"
-        }
-        return "\(length) tokens"
-    }
 }
 
-// MARK: - Shared Card Styling
+private struct AvailableModelRow: View {
+    let model: LLMModel
 
-private struct ModelManagerCardView<Content: View>: View {
-    let icon: String?
-    let title: String
-    let caption: String?
-    let content: Content
-    
-    init(icon: String? = nil, title: String, caption: String? = nil, @ViewBuilder content: () -> Content) {
-        self.icon = icon
-        self.title = title
-        self.caption = caption
-        self.content = content()
-    }
-    
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if icon != nil || !title.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    if let icon {
-                        Image(systemName: icon)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                            .frame(width: 20)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(.footnote)
-                            .fontWeight(.semibold)
-                            .textCase(.uppercase)
-                            .tracking(0.8)
-                        if let caption, !caption.isEmpty {
-                            Text(caption)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(model.name)
+                    .font(.headline)
+                Spacer()
+                AvailabilityBadge(isAvailable: model.isAvailable)
+            }
+
+            if let description = model.contextDescription {
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Text(model.parameterCount)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if let quant = model.quantization {
+                    Text(quant)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
-            content
+
+            if let note = model.availabilityNote {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(DSColors.surface)
-                .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 4)
-        )
+        .padding(.vertical, 6)
     }
 }
 
-private struct CustomModelInstructionsView: View {
-    @Environment(\.dismiss) var dismiss
-    
+private struct AvailabilityBadge: View {
+    let isAvailable: Bool
+
     var body: some View {
-        NavigationView {
+        Text(isAvailable ? "Ready" : "Unavailable")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(isAvailable ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
+            .foregroundColor(isAvailable ? .green : .orange)
+            .clipShape(Capsule())
+    }
+}
+
+struct ModelComparisonSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let deviceCapabilities: DeviceCapabilities
+    let installedModels: [InstalledModel]
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: 240), spacing: 16, alignment: .top)]
+    }
+
+    private var comparisonEntries: [ComparisonEntry] {
+        LLMModelType.allCases
+            .filter(isRelevant(_:))
+            .map { type in
+                ComparisonEntry(
+                    type: type,
+                    availability: availability(for: type),
+                    highlights: highlights(for: type),
+                    capabilities: Array(type.capabilities.prefix(4))
+                )
+            }
+    }
+
+    var body: some View {
+        NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    InstructionSection(
-                        title: "Pathway B1: Core ML Models",
-                        icon: "cpu",
-                        steps: [
-                            "Download a PyTorch or TensorFlow model",
-                            "Use coremltools Python library to convert to .mlpackage format",
-                            "Apply optimizations: quantization and KV-caching",
-                            "Transfer the .mlpackage file to your iOS device",
-                            "The app will automatically detect and load it"
-                        ]
-                    )
-                    
-                    Divider()
-                    
-                    InstructionSection(
-                        title: "Pathway B2: GGUF Models",
-                        icon: "doc.badge.gearshape",
-                        steps: [
-                            "Download any GGUF-formatted model from Hugging Face",
-                            "Transfer the .gguf file to your iOS device",
-                            "Select it in the app's model picker",
-                            "Requires llama.cpp integration (optional feature - see ENHANCEMENTS.md)"
-                        ]
-                    )
-                    
-                    Divider()
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Recommended Models")
-                            .font(.headline)
-                        
-                        Text("• Llama 3.1 (8B, 4-bit quantized)")
-                        Text("• Phi-3 Mini (3.8B)")
-                        Text("• Mistral 7B (4-bit quantized)")
-                        Text("• Gemma 2B")
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(comparisonEntries) { entry in
+                        ModelComparisonCard(entry: entry)
                     }
-                    .font(.body)
-                    .padding()
-                    .background(DSColors.surface)
-                    .cornerRadius(12)
                 }
                 .padding()
             }
-            .navigationTitle("Custom Models")
-            #if os(iOS)
+            .background(DSColors.background.ignoresSafeArea())
+            .navigationTitle("Compare Models")
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
                 }
-                #elseif os(macOS)
-                ToolbarItem(placement: .automatic) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-                #endif
             }
         }
     }
+
+    private func isRelevant(_ type: LLMModelType) -> Bool {
+        #if os(iOS)
+            let relevant: Set<LLMModelType> = [
+                .appleIntelligence, .chatGPTExtension, .onDeviceAnalysis,
+                .openAIDirect, .ggufLocal, .coreMLLocal,
+            ]
+            return relevant.contains(type)
+        #else
+            return true
+        #endif
+    }
+
+    private func availability(for type: LLMModelType) -> ComparisonEntry.Availability {
+        switch type {
+        case .appleIntelligence:
+            if deviceCapabilities.supportsFoundationModels {
+                return .ready("Runs locally with PCC fallback")
+            }
+            return .blocked(
+                deviceCapabilities.appleIntelligenceUnavailableReason
+                    ?? "Requires supported hardware")
+        case .chatGPTExtension:
+            if deviceCapabilities.supportsAppleIntelligence {
+                return .ready("Enable under Apple Intelligence settings")
+            }
+            return .blocked("Requires Apple Intelligence enabled device")
+        case .ggufLocal:
+            if installedModels.contains(where: { $0.backend == .gguf }) {
+                return .ready("Cartridge installed")
+            }
+            return .optional("Download a GGUF from the gallery")
+        case .coreMLLocal:
+            if installedModels.contains(where: { $0.backend == .coreML }) {
+                return .ready("Custom Core ML package detected")
+            }
+            return .optional("Import a .mlpackage via Files")
+        case .onDeviceAnalysis:
+            return .ready("Always on-device")
+        case .openAIDirect:
+            return .optional("Requires OpenAI API key")
+        }
+    }
+
+    private func highlights(for type: LLMModelType) -> [String] {
+        switch type {
+        case .appleIntelligence:
+            return ["Hybrid", "Private"]
+        case .chatGPTExtension:
+            return ["Apple Intelligence"]
+        case .ggufLocal, .coreMLLocal, .onDeviceAnalysis:
+            return ["Offline"]
+        case .openAIDirect:
+            return ["Cloud"]
+        }
+    }
+
+    struct ComparisonEntry: Identifiable {
+        enum Availability {
+            case ready(String)
+            case optional(String)
+            case blocked(String)
+
+            var color: Color {
+                switch self {
+                case .ready: return .green
+                case .optional: return .orange
+                case .blocked: return .red
+                }
+            }
+
+            var label: String {
+                switch self {
+                case .ready: return "Ready"
+                case .optional: return "Optional"
+                case .blocked: return "Unavailable"
+                }
+            }
+
+            var detail: String {
+                switch self {
+                case .ready(let detail), .optional(let detail), .blocked(let detail):
+                    return detail
+                }
+            }
+        }
+
+        let id = UUID()
+        let type: LLMModelType
+        let availability: Availability
+        let highlights: [String]
+        let capabilities: [String]
+    }
 }
 
-private struct InstructionSection: View {
-    let title: String
-    let icon: String
-    let steps: [String]
-    
+private struct ModelComparisonCard: View {
+    let entry: ModelComparisonSheet.ComparisonEntry
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: icon)
-                    .font(.title2)
+                Image(systemName: entry.type.iconName)
                     .foregroundColor(.accentColor)
-                Text(title)
+                Text(entry.type.displayName)
                     .font(.headline)
+                Spacer()
             }
-            
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                HStack(alignment: .top, spacing: 8) {
-                    Text("\(index + 1).")
-                        .fontWeight(.semibold)
-                        .foregroundColor(.accentColor)
-                    Text(step)
-                        .fixedSize(horizontal: false, vertical: true)
+
+            ComparisonAvailabilityBadge(availability: entry.availability)
+
+            if !entry.highlights.isEmpty {
+                HStack {
+                    ForEach(entry.highlights, id: \.self) { highlight in
+                        Text(highlight)
+                            .font(.caption2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
                 }
-                .font(.body)
             }
-        }
-    }
-}
 
-// MARK: - Downloadable Model Row
+            Text(entry.type.description)
+                .font(.caption)
+                .foregroundColor(.secondary)
 
-struct DownloadableModelRow: View {
-    let entry: ModelCatalogEntry
-    let state: DownloadState?
-    let onDownload: () -> Void
-    let onPause: () -> Void
-    let onResume: () -> Void
-    let onCancel: () -> Void
-    let formatBytes: (Int64?) -> String
-    let downloadSpeedAndETA: (DownloadState) -> String
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            // Model info header
-            HStack(alignment: .top, spacing: 12) {
-                // Icon
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(iconBackgroundColor)
-                        .frame(width: 56, height: 56)
-                    
-                    Image(systemName: iconName)
-                        .font(.title2)
-                        .foregroundColor(iconColor)
-                }
-                
-                // Model details
+            if !entry.capabilities.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(entry.name)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(2)
-                    
-                    // Metadata badges
-                    HStack(spacing: 8) {
-                        if let vendor = entry.vendor, !vendor.isEmpty {
-                            MetadataBadge(icon: "tag.fill", text: vendor)
-                        }
-                        if let sz = entry.sizeBytes {
-                            MetadataBadge(icon: "externaldrive.fill", text: formatBytes(sz))
-                        }
-                        if let quant = entry.quantization {
-                            MetadataBadge(icon: "cpu", text: quant)
-                        }
-                    }
-                    
-                    // Backend type
-                    HStack(spacing: 4) {
-                        Image(systemName: entry.backend.iconName)
-                            .font(.caption2)
-                        Text(entry.backend.displayName)
-                            .font(.caption2)
-                    }
-                    .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-            }
-            
-            // Large download warning
-            if let sz = entry.sizeBytes, sz > 1_000_000_000 {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                    Text("Large download (~\(formatBytes(sz)))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-                .padding(8)
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(8)
-            }
-            
-            // Download status and controls
-            downloadStatusView
-        }
-        .padding(.vertical, 8)
-    }
-    
-    @ViewBuilder
-    private var downloadStatusView: some View {
-        switch state?.status {
-        case .downloading:
-            VStack(spacing: 8) {
-                // Progress bar
-                ProgressView(value: state?.progress ?? 0.0)
-                    .progressViewStyle(.linear)
-                    .tint(.accentColor)
-                
-                // Progress details
-                HStack {
-                    Text(String(format: "%.0f%%", (state?.progress ?? 0.0) * 100.0))
-                        .font(.caption.weight(.medium))
-                        .foregroundColor(.accentColor)
-                    
-                    Spacer()
-                    
-                    if let st = state {
-                        Text(downloadSpeedAndETA(st))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                
-                // Control buttons
-                HStack(spacing: 10) {
-                    Button(action: onPause) {
-                        Label("Pause", systemImage: "pause.circle.fill")
-                            .font(.caption.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    
-                    Button(action: onCancel) {
-                        Label("Cancel", systemImage: "xmark.circle.fill")
-                            .font(.caption.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(.red)
-                    
-                    Spacer()
-                }
-            }
-            
-        case .paused:
-            HStack(spacing: 12) {
-                Image(systemName: "pause.circle.fill")
-                    .font(.title3)
-                    .foregroundColor(.orange)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Paused")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(.orange)
-                    if let progress = state?.progress {
-                        Text(String(format: "%.0f%% complete", progress * 100.0))
+                    ForEach(entry.capabilities, id: \.self) { capability in
+                        Label(capability, systemImage: "checkmark.circle.fill")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.green)
                     }
                 }
-                
-                Spacer()
-                
-                Button(action: onResume) {
-                    Label("Resume", systemImage: "play.circle.fill")
-                        .font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                
-                Button(action: onCancel) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(.red)
             }
-            .padding(12)
-            .background(Color.orange.opacity(0.1))
-            .cornerRadius(12)
-            
-        case .verifying:
-            HStack(spacing: 12) {
-                ProgressView()
-                    .scaleEffect(0.9)
-                Text("Verifying integrity...")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                Spacer()
+
+            VStack(alignment: .leading, spacing: 4) {
+                SpecLine(title: "Category", value: entry.type.category)
+                SpecLine(title: "Privacy", value: entry.type.privacyLevel)
+                SpecLine(
+                    title: "Network", value: entry.type.requiresNetwork ? "Required" : "Optional")
+                SpecLine(title: "Context", value: entry.type.contextDescription)
             }
-            .padding(12)
-            .background(DSColors.surface)
-            .cornerRadius(12)
-            
-        case .registering:
-            HStack(spacing: 12) {
-                ProgressView()
-                    .scaleEffect(0.9)
-                Text("Installing model...")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-            .padding(12)
-            .background(DSColors.surface)
-            .cornerRadius(12)
-            
-        case .completed:
-            HStack(spacing: 12) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.title3)
-                    .foregroundColor(.green)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Installed Successfully")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(.green)
-                    Text("Ready to use in Settings")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-            }
-            .padding(12)
-            .background(Color.green.opacity(0.1))
-            .cornerRadius(12)
-            
-        case .failed(let msg):
-            VStack(spacing: 10) {
-                HStack(spacing: 12) {
-                    Image(systemName: "xmark.octagon.fill")
-                        .font(.title3)
-                        .foregroundColor(.red)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Download Failed")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.red)
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                    }
-                    
-                    Spacer()
-                }
-                
-                Button(action: onDownload) {
-                    Label("Retry Download", systemImage: "arrow.clockwise.circle.fill")
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .padding(12)
-            .background(Color.red.opacity(0.1))
-            .cornerRadius(12)
-            
-        case .cancelled:
-            HStack(spacing: 12) {
-                Image(systemName: "bolt.slash.circle.fill")
-                    .font(.title3)
-                    .foregroundColor(.orange)
-                
-                Text("Download Cancelled")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                Button(action: onDownload) {
-                    Label("Download", systemImage: "arrow.down.circle.fill")
-                        .font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .padding(12)
-            .background(DSColors.surface)
-            .cornerRadius(12)
-            
-        default:
-            // Idle - show download button
-            Button(action: onDownload) {
-                HStack {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.title3)
-                    Text("Download Model")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    if let sz = entry.sizeBytes {
-                        Text(formatBytes(sz))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
         }
-    }
-    
-    private var iconName: String {
-        switch entry.backend {
-        case .gguf: return "doc.badge.gearshape"
-        case .coreML: return "cpu"
-        case .mlxServer: return "server.rack"
-        }
-    }
-    
-    private var iconColor: Color {
-        if case .completed = state?.status {
-            return .green
-        }
-        return .accentColor
-    }
-    
-    private var iconBackgroundColor: Color {
-        if case .completed = state?.status {
-            return Color.green.opacity(0.15)
-        }
-        return Color.accentColor.opacity(0.15)
+        .padding()
+        .background(DSColors.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
-private struct MetadataBadge: View {
-    let icon: String
-    let text: String
-    
+private struct ComparisonAvailabilityBadge: View {
+    let availability: ModelComparisonSheet.ComparisonEntry.Availability
+
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(availability.label)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(availability.color.opacity(0.15))
+                .foregroundColor(availability.color)
+                .clipShape(Capsule())
+            Text(availability.detail)
                 .font(.caption2)
-            Text(text)
-                .font(.caption2)
+                .foregroundColor(.secondary)
         }
-        .foregroundColor(.secondary)
+    }
+}
+
+private struct SpecLine: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption.weight(.medium))
+        }
+    }
+}
+
+struct CustomModelInstructionsView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Core ML Packages") {
+                    InstructionRow(text: "Convert your model to .mlpackage using coremltools.")
+                    InstructionRow(text: "Copy the package into RAGMLCore via Files app.")
+                    InstructionRow(text: "Activate it from Installed Models once detected.")
+                }
+
+                Section("GGUF Models") {
+                    InstructionRow(text: "Download GGUF builds from trusted Hugging Face repos.")
+                    InstructionRow(text: "AirDrop or Files-import the .gguf into the app.")
+                    InstructionRow(text: "Activate once the llama.cpp runtime is available.")
+                }
+
+                Section("Suggested Starters") {
+                    InstructionRow(text: "Qwen2.5 1.5B Q4_K_M")
+                    InstructionRow(text: "Llama 3.1 8B Q4_K_M")
+                    InstructionRow(text: "Phi-3 Mini 3.8B")
+                }
+            }
+            .navigationTitle("Custom Models")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct InstructionRow: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .padding(.top, 6)
+                .foregroundColor(.accentColor)
+            Text(text)
+                .font(.subheadline)
+        }
+        .padding(.vertical, 4)
     }
 }
 
 #Preview {
     let service = RAGService()
-    return ModelManagerView(ragService: service)
-        .environmentObject(SettingsStore(ragService: service))
+    return NavigationStack {
+        ModelManagerView(ragService: service)
+            .environmentObject(SettingsStore(ragService: service))
+    }
 }

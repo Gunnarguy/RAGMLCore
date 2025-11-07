@@ -62,12 +62,6 @@ struct ModelInfoCard: View {
             return Image(systemName: "doc.text.magnifyingglass")
         case .openAIDirect:
             return Image(systemName: "key.fill")
-        case .mlxLocal:
-            return Image(systemName: "server.rack")
-        case .llamaCppLocal:
-            return Image(systemName: "server.rack")
-        case .ollamaLocal:
-            return Image(systemName: "server.rack")
         case .ggufLocal:
             return Image(systemName: "doc.badge.gearshape")
         case .coreMLLocal:
@@ -108,24 +102,6 @@ struct ModelInfoCard: View {
             return true
         case .openAIDirect:
             return true
-        case .mlxLocal:
-            #if os(macOS)
-            return true
-            #else
-            return false
-            #endif
-        case .llamaCppLocal:
-            #if os(macOS)
-            return true
-            #else
-            return false
-            #endif
-        case .ollamaLocal:
-            #if os(macOS)
-            return true
-            #else
-            return false
-            #endif
         case .ggufLocal:
             #if os(iOS)
             // Available when a GGUF model is selected from the registry
@@ -155,24 +131,6 @@ struct ModelInfoCard: View {
             return nil
         case .openAIDirect:
             return nil
-        case .mlxLocal:
-            #if os(macOS)
-            return nil
-            #else
-            return "Available on macOS only"
-            #endif
-        case .llamaCppLocal:
-            #if os(macOS)
-            return nil
-            #else
-            return "Available on macOS only"
-            #endif
-        case .ollamaLocal:
-            #if os(macOS)
-            return nil
-            #else
-            return "Available on macOS only"
-            #endif
         case .ggufLocal:
             #if os(iOS)
             let configured = (UserDefaults.standard.string(forKey: LlamaCPPiOSLLMService.selectedModelIdKey) ?? "").isEmpty == false
@@ -229,40 +187,19 @@ struct ModelInfoCard: View {
                 "Full control over usage",
                 "Up to 400K context window"
             ]
-        case .mlxLocal:
-            return [
-                "Local MLX server on macOS",
-                "OpenAI-compatible HTTP endpoint",
-                "No data leaves device",
-                "Works with popular open models"
-            ]
-        case .llamaCppLocal:
-            return [
-                "Local llama.cpp server on macOS",
-                "OpenAI-compatible HTTP endpoint",
-                "No data leaves device",
-                "Efficient CPU inference for many open models"
-            ]
-        case .ollamaLocal:
-            return [
-                "Ollama local runtime on macOS",
-                "OpenAI-compatible HTTP endpoint",
-                "Pull and run many community models",
-                "No data leaves device by default"
-            ]
         case .ggufLocal:
             return [
-                "Run GGUF models fully on-device (iOS)",
-                "Ideal for small models (Gemma/Qwen 2–4B, quantized)",
-                "No network required",
-                "Uses embedded llama.cpp runtime (Metal/ANE) — integration in progress"
+                "Run quantized GGUF models entirely on-device",
+                "Embedded llama.cpp core optimized for Metal/ANE",
+                "Zero network usage or external dependencies",
+                "Great for Gemma/Qwen 2-4B class models"
             ]
         case .coreMLLocal:
             return [
                 "Custom Core ML LLM (.mlpackage)",
-                "Runs fully on-device",
-                "No network required",
-                "Requires a compatible converted model"
+                "Accelerated by Neural Engine where available",
+                "100% offline inference",
+                "Bring your own converted model"
             ]
         }
     }

@@ -85,40 +85,45 @@ struct InstalledModel: Identifiable, Codable, Equatable {
 // MARK: - Registry persistence (file locations)
 
 enum ModelRegistryLocations {
-    private static var didMigrateLegacyDirectory = false
+    private static var didMigrateFromAppSupport = false
 
     static func modelsDirectory() throws -> URL {
         let fm = FileManager.default
-        let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        var dir = support.appendingPathComponent("Models", isDirectory: true)
+        // Use Documents directory - persists across app reinstalls and rebuilds
+        let docs = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let dir = docs.appendingPathComponent("Models", isDirectory: true)
         if !fm.fileExists(atPath: dir.path) {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
-        if !didMigrateLegacyDirectory {
-            didMigrateLegacyDirectory = true
-            if let legacyDocs = try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+        // Migrate from old Application Support location if needed
+        if !didMigrateFromAppSupport {
+            didMigrateFromAppSupport = true
+            if let legacyAppSupport = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
                 .appendingPathComponent("Models", isDirectory: true),
-               fm.fileExists(atPath: legacyDocs.path) {
+               fm.fileExists(atPath: legacyAppSupport.path) {
                 do {
-                    let contents = try fm.contentsOfDirectory(at: legacyDocs, includingPropertiesForKeys: nil)
+                    let contents = try fm.contentsOfDirectory(at: legacyAppSupport, includingPropertiesForKeys: nil)
                     for item in contents {
                         let destination = dir.appendingPathComponent(item.lastPathComponent, isDirectory: item.hasDirectoryPath)
                         if fm.fileExists(atPath: destination.path) { continue }
                         try fm.moveItem(at: item, to: destination)
                     }
-                    try? fm.removeItem(at: legacyDocs)
-                    Log.info("Migrated legacy model directory to Application Support", category: .pipeline)
+                    try? fm.removeItem(at: legacyAppSupport)
+                    Log.info("Migrated models from Application Support to Documents", category: .pipeline)
                 } catch {
-                    Log.warning("Failed to migrate legacy models directory: \(error.localizedDescription)", category: .pipeline)
+                    Log.warning("Failed to migrate models from Application Support: \(error.localizedDescription)", category: .pipeline)
                 }
             }
         }
 
+        // Documents directory is automatically backed up by iCloud/iTunes, but models are large
+        // Mark as excluded from backup to save user's iCloud storage
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
         do {
-            try dir.setResourceValues(resourceValues)
+            var mutableDir = dir
+            try mutableDir.setResourceValues(resourceValues)
         } catch {
             Log.warning("Unable to mark models directory as do-not-backup: \(error.localizedDescription)", category: .pipeline)
         }
@@ -144,6 +149,18 @@ struct TokenizerEstimatorDescriptor: Codable, Equatable {
     }
     var kind: Kind
     var modelHint: String?   // optional filename/tokenizer path for precise init (future)
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    /// Emitted when the downloader auto-selects a newly installed cartridge.
+    static let installedModelAutoSelected = Notification.Name("InstalledModelAutoSelected")
+}
+
+enum ModelAutoSelectionPayload {
+    static let backend = "backend"
+    static let modelId = "modelId"
 }
 
 // MARK: - Cartridge selection state

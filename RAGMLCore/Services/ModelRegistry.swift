@@ -7,19 +7,23 @@
 //  and hook GGUF import path so selections become first-class cartridges.
 //
 
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 final class ModelRegistry: ObservableObject {
     static let shared = ModelRegistry()
 
     @Published private(set) var installed: [InstalledModel] = []
+    @Published private(set) var isLoaded: Bool = false
 
     private let saveQueue = DispatchQueue(label: "ai.ragmlcore.modelregistry.save", qos: .utility)
 
     private init() {
-        Task { await load() }
+        Task {
+            await load()
+            isLoaded = true
+        }
     }
 
     // MARK: - Persistence
@@ -31,11 +35,19 @@ final class ModelRegistry: ObservableObject {
                 let data = try Data(contentsOf: url)
                 let models = try JSONDecoder().decode([InstalledModel].self, from: data)
                 installed = models
+                Log.info(
+                    "[ModelRegistry] Loaded \(models.count) models from registry",
+                    category: .pipeline)
             } else {
                 installed = []
+                Log.info(
+                    "[ModelRegistry] No registry file found, starting with empty registry",
+                    category: .pipeline)
             }
         } catch {
-            Log.warning("[ModelRegistry] Failed to load registry: \(error.localizedDescription)", category: .pipeline)
+            Log.warning(
+                "[ModelRegistry] Failed to load registry: \(error.localizedDescription)",
+                category: .pipeline)
             installed = []
         }
     }
@@ -47,7 +59,9 @@ final class ModelRegistry: ObservableObject {
             // Write atomically to avoid partial writes
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.warning("[ModelRegistry] Failed to save registry: \(error.localizedDescription)", category: .pipeline)
+            Log.warning(
+                "[ModelRegistry] Failed to save registry: \(error.localizedDescription)",
+                category: .pipeline)
         }
     }
 
@@ -59,7 +73,25 @@ final class ModelRegistry: ObservableObject {
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: url, options: .atomic)
             } catch {
-                Log.warning("[ModelRegistry] Failed to save registry (bg): \(error.localizedDescription)", category: .pipeline)
+                Log.warning(
+                    "[ModelRegistry] Failed to save registry (bg): \(error.localizedDescription)",
+                    category: .pipeline)
+            }
+        }
+    }
+
+    private func deleteFileAsync(at url: URL) {
+        let path = url.path
+        saveQueue.async {
+            do {
+                try FileManager.default.removeItem(atPath: path)
+                Log.info(
+                    "[ModelRegistry] Deleted model file: \(url.lastPathComponent)",
+                    category: .pipeline)
+            } catch {
+                Log.warning(
+                    "[ModelRegistry] Failed to delete model file: \(error.localizedDescription)",
+                    category: .pipeline)
             }
         }
     }
@@ -73,14 +105,33 @@ final class ModelRegistry: ObservableObject {
     }
 
     func remove(id: UUID) {
-        installed.removeAll { $0.id == id }
+        guard let model = installed.first(where: { $0.id == id }) else { return }
+        remove(model, deleteFromDisk: false)
+    }
+
+    func remove(_ model: InstalledModel, deleteFromDisk: Bool) {
+        installed.removeAll { $0.id == model.id }
         scheduleSave()
+        if deleteFromDisk, let url = model.localURL {
+            deleteFileAsync(at: url)
+        }
+        TelemetryCenter.emit(
+            .storage,
+            title: "Model removed",
+            metadata: [
+                "id": String(model.id.uuidString.prefix(8)),
+                "name": model.name,
+                "backend": model.backend.rawValue,
+            ]
+        )
     }
 
     /// Install a GGUF file (copied into Documents/Models externally).
     func installGGUF(at localURL: URL) {
         // Dedup by path
-        if let existingIdx = installed.firstIndex(where: { $0.localURL?.path == localURL.path && $0.backend == .gguf }) {
+        if let existingIdx = installed.firstIndex(where: {
+            $0.localURL?.path == localURL.path && $0.backend == .gguf
+        }) {
             // Refresh metadata (size, notes) if needed
             var current = installed[existingIdx]
             current.sizeBytes = fileSize(at: localURL)
@@ -88,7 +139,8 @@ final class ModelRegistry: ObservableObject {
             current.vendor = inferVendor(from: localURL.lastPathComponent)
             installed[existingIdx] = current
             scheduleSave()
-            Log.info("[ModelRegistry] Updated existing GGUF entry: \(current.name)", category: .pipeline)
+            Log.info(
+                "[ModelRegistry] Updated existing GGUF entry: \(current.name)", category: .pipeline)
             return
         }
 
@@ -97,7 +149,7 @@ final class ModelRegistry: ObservableObject {
             backend: .gguf,
             localURL: localURL,
             sizeBytes: fileSize(at: localURL),
-            contextWindow: nil,              // unknown until runtime/metadata parsed
+            contextWindow: nil,  // unknown until runtime/metadata parsed
             tokenizerType: "llama",
             quantization: inferQuant(from: localURL.lastPathComponent),
             supportsToolUse: false,
@@ -114,7 +166,7 @@ final class ModelRegistry: ObservableObject {
             title: "GGUF model registered",
             metadata: [
                 "name": model.name,
-                "size": "\(model.sizeBytes ?? 0)"
+                "size": "\(model.sizeBytes ?? 0)",
             ]
         )
     }
@@ -122,13 +174,17 @@ final class ModelRegistry: ObservableObject {
     /// Install a Core ML LLM package (.mlpackage)
     func installCoreML(at localURL: URL) {
         // Dedup by path
-        if let existingIdx = installed.firstIndex(where: { $0.localURL?.path == localURL.path && $0.backend == .coreML }) {
+        if let existingIdx = installed.firstIndex(where: {
+            $0.localURL?.path == localURL.path && $0.backend == .coreML
+        }) {
             var current = installed[existingIdx]
             current.sizeBytes = fileSize(at: localURL)
             current.name = localURL.lastPathComponent
             installed[existingIdx] = current
             scheduleSave()
-            Log.info("[ModelRegistry] Updated existing CoreML entry: \(current.name)", category: .pipeline)
+            Log.info(
+                "[ModelRegistry] Updated existing CoreML entry: \(current.name)",
+                category: .pipeline)
             return
         }
 
@@ -154,41 +210,9 @@ final class ModelRegistry: ObservableObject {
             title: "Core ML model registered",
             metadata: [
                 "name": model.name,
-                "size": "\(model.sizeBytes ?? 0)"
+                "size": "\(model.sizeBytes ?? 0)",
             ]
         )
-    }
-
-    /// Register an MLX server "model" descriptor (no local file).
-    func installMLX(name: String, endpoint: URL) {
-        // For MLX server we store name/vendor, optional notes = endpoint
-        if let existingIdx = installed.firstIndex(where: { $0.backend == .mlxServer && $0.notes == endpoint.absoluteString }) {
-            var current = installed[existingIdx]
-            current.name = name
-            current.vendor = inferVendor(from: name)
-            installed[existingIdx] = current
-            scheduleSave()
-            Log.info("[ModelRegistry] Updated MLX server entry: \(name)", category: .pipeline)
-            return
-        }
-
-        let model = InstalledModel(
-            name: name,
-            backend: .mlxServer,
-            localURL: nil,
-            sizeBytes: nil,
-            contextWindow: nil,
-            tokenizerType: nil,
-            quantization: nil,
-            supportsToolUse: false,
-            installedAt: Date(),
-            version: nil,
-            vendor: inferVendor(from: name),
-            notes: endpoint.absoluteString
-        )
-        installed.append(model)
-        scheduleSave()
-        Log.info("[ModelRegistry] Installed MLX server descriptor: \(name) @ \(endpoint.absoluteString)", category: .pipeline)
     }
 
     // MARK: - Helpers
@@ -227,12 +251,15 @@ final class ModelRegistry: ObservableObject {
 
 @MainActor
 enum ModelActivationService {
-    static func activate(_ installed: InstalledModel, ragService: RAGService, settings: SettingsStore) async {
+    static func activate(
+        _ installed: InstalledModel, ragService: RAGService, settings: SettingsStore
+    ) async {
         switch installed.backend {
         case .gguf:
             // Persist selection even if runtime is not yet bundled so the user can set Primary now.
             let hasRuntime = LlamaCPPiOSLLMService.runtimeAvailable
-            guard let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) else {
+            guard let url = installed.localURL, FileManager.default.fileExists(atPath: url.path)
+            else {
                 Log.warning("GGUF file missing on disk", category: .llm)
                 return
             }
@@ -246,10 +273,13 @@ enum ModelActivationService {
                 await ragService.updateLLMService(service)
                 Log.info("Activated GGUF model immediately", category: .llm)
             } else {
-                Log.warning("GGUF runtime not bundled; selection persisted and will activate once runtime is linked", category: .llm)
+                Log.warning(
+                    "GGUF runtime not bundled; selection persisted and will activate once runtime is linked",
+                    category: .llm)
             }
         case .coreML:
-            guard let url = installed.localURL, FileManager.default.fileExists(atPath: url.path) else {
+            guard let url = installed.localURL, FileManager.default.fileExists(atPath: url.path)
+            else {
                 Log.warning("Core ML package missing on disk", category: .llm)
                 return
             }
@@ -260,7 +290,7 @@ enum ModelActivationService {
                 await ragService.updateLLMService(service)
             }
         case .mlxServer:
-            Log.info("MLX server activation pending implementation", category: .llm)
+            Log.info("Ignoring legacy MLX server entry", category: .llm)
         }
     }
 }

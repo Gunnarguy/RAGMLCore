@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B0F9A0C52E9F0001001274A2 /* LocalLLMClient in Frameworks */ = {isa = PBXBuildFile; productRef = B0F9A0C32E9F0001001274A2 /* LocalLLMClient */; };
+		B0F9A0C62E9F0001001274A2 /* LocalLLMClientLlama in Frameworks */ = {isa = PBXBuildFile; productRef = B0F9A0C42E9F0001001274A2 /* LocalLLMClientLlama */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		B0D565DE2E98AC50001274A2 /* RAGMLCore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RAGMLCore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +28,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B0F9A0C52E9F0001001274A2 /* LocalLLMClient in Frameworks */,
+				B0F9A0C62E9F0001001274A2 /* LocalLLMClientLlama in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +72,8 @@
 			);
 			name = RAGMLCore;
 			packageProductDependencies = (
+				B0F9A0C32E9F0001001274A2 /* LocalLLMClient */,
+				B0F9A0C42E9F0001001274A2 /* LocalLLMClientLlama */,
 			);
 			productName = RAGMLCore;
 			productReference = B0D565DE2E98AC50001274A2 /* RAGMLCore.app */;
@@ -94,26 +103,18 @@
 			);
 			mainGroup = B0D565D52E98AC50001274A2;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B0F9A0C22E9F0001001274A2 /* XCLocalSwiftPackageReference "Vendor/LocalLLMClient" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B0D565DF2E98AC50001274A2 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			packageReferences = (
-			);
 			targets = (
 				B0D565DD2E98AC50001274A2 /* RAGMLCore */,
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXBuildFile section */
-/* End PBXBuildFile section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B0D565DC2E98AC50001274A2 /* Resources */ = {
@@ -283,12 +284,13 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Gunndamental.RAGMLCore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
-				SDKROOT = auto;
+				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -327,12 +329,13 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Gunndamental.RAGMLCore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
-				SDKROOT = auto;
+				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -362,6 +365,26 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B0F9A0C22E9F0001001274A2 /* XCLocalSwiftPackageReference "Vendor/LocalLLMClient" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/LocalLLMClient;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B0F9A0C32E9F0001001274A2 /* LocalLLMClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B0F9A0C22E9F0001001274A2 /* XCLocalSwiftPackageReference "Vendor/LocalLLMClient" */;
+			productName = LocalLLMClient;
+		};
+		B0F9A0C42E9F0001001274A2 /* LocalLLMClientLlama */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B0F9A0C22E9F0001001274A2 /* XCLocalSwiftPackageReference "Vendor/LocalLLMClient" */;
+			productName = LocalLLMClientLlama;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B0D565D62E98AC50001274A2 /* Project object */;
 }

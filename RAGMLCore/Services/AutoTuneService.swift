@@ -47,12 +47,6 @@ enum AutoTuneService {
             temperature = 0.0
             maxTokens = 300 // short answers
 
-        case .mlxLocal, .llamaCppLocal, .ollamaLocal:
-            // macOS local servers - assume decent throughput on desktop, moderate completion len
-            maxTokens = clamp(maxTokens, 600, 1500)
-            topK = clamp(topK, 3, 7)
-            temperature = clamp(temperature, 0.5, 0.8)
-
         case .ggufLocal:
             // iOS GGUF - find the installed cartridge to infer hints (contextWindow, quant, vendor).
             let (ctx, quant, vendor) = ggufHintsFromRegistry()

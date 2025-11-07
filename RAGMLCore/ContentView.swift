@@ -12,7 +12,7 @@ struct ContentView: View {
     @StateObject private var ragService: RAGService
     @StateObject private var settingsStore: SettingsStore
     @State private var selectedTab: Tab = .chat
-    
+
     init() {
         let containerSvc = ContainerService()
         let ragSvc = RAGService(containerService: containerSvc)
@@ -20,24 +20,24 @@ struct ContentView: View {
         _ragService = StateObject(wrappedValue: ragSvc)
         _settingsStore = StateObject(wrappedValue: SettingsStore(ragService: ragSvc))
     }
-    
+
     enum Tab {
         case chat, documents, visualizations, settings
     }
-    
+
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationView {
                 ChatScreen(ragService: ragService)
             }
             #if os(iOS)
-            .navigationViewStyle(.stack)
+                .navigationViewStyle(.stack)
             #endif
             .tabItem {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
             }
             .tag(Tab.chat)
-            
+
             NavigationView {
                 DocumentLibraryView(
                     ragService: ragService,
@@ -46,31 +46,31 @@ struct ContentView: View {
                 )
             }
             #if os(iOS)
-            .navigationViewStyle(.stack)
+                .navigationViewStyle(.stack)
             #endif
             .tabItem {
                 Label("Documents", systemImage: "doc.text.magnifyingglass")
             }
             .tag(Tab.documents)
-            
+
             NavigationView {
                 VisualizationsView(onRequestAddDocuments: { selectedTab = .documents })
                     .environmentObject(ragService)
                     .environmentObject(containerService)
             }
             #if os(iOS)
-            .navigationViewStyle(.stack)
+                .navigationViewStyle(.stack)
             #endif
             .tabItem {
                 Label("Visualizations", systemImage: "cube.transparent")
             }
             .tag(Tab.visualizations)
-            
+
             NavigationView {
                 SettingsView(ragService: ragService)
             }
             #if os(iOS)
-            .navigationViewStyle(.stack)
+                .navigationViewStyle(.stack)
             #endif
             .environmentObject(settingsStore)
             .tabItem {
