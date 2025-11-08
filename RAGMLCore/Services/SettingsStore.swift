@@ -11,9 +11,13 @@ import Combine
 import Foundation
 import SwiftUI
 
+/// Central settings state shared across the app.
+/// - Persists values to `UserDefaults` so SwiftUI `@AppStorage` bindings stay in sync.
+/// - Emits debounced apply notifications once related settings change.
 @MainActor
 final class SettingsStore: ObservableObject {
     // MARK: - Keys (mirror existing @AppStorage in SettingsRootView.swift)
+    /// Backing keys for settings stored in `UserDefaults`.
     private enum Keys {
         static let selectedModel = "selectedLLMModel"  // LLMModelType.rawValue
         static let openaiAPIKey = "openaiAPIKey"
@@ -29,7 +33,8 @@ final class SettingsStore: ObservableObject {
         static let enableFB2 = "enableSecondFallback"  // Bool
         static let firstFB = "firstFallbackModel"  // LLMModelType.rawValue
         static let secondFB = "secondFallbackModel"  // LLMModelType.rawValue
-    static let primaryModelUserOverride = "primaryModelUserOverride"
+        static let primaryModelUserOverride = "primaryModelUserOverride"
+        static let localComputePreference = "ggufLocalComputePreference"
 
         // Responses API options
         static let responsesIncludeReasoning = "responsesIncludeReasoning"
@@ -39,29 +44,50 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - Published Settings (bind from UI)
+    /// Primary inference pathway the user selected.
     @Published var selectedModel: LLMModelType
+    /// Stored OpenAI API key (macOS only in the current build).
     @Published var openaiAPIKey: String
+    /// Selected OpenAI model identifier.
     @Published var openaiModel: String
 
+    /// Whether Private Cloud Compute should be preferred when available.
     @Published var preferPrivateCloudCompute: Bool
+    /// Whether Private Cloud Compute requests are allowed at all.
     @Published var allowPrivateCloudCompute: Bool
+    /// Active execution strategy describing how queries are routed.
     @Published var executionContext: ExecutionContext
 
+    /// Temperature applied to generative models.
     @Published var temperature: Double
+    /// Response length ceiling for the active model.
     @Published var maxTokens: Int
+    /// Number of retrieved chunks per query.
     @Published var topK: Int
 
+    /// Loosens similarity thresholds during retrieval when enabled.
     @Published var lenientRetrievalMode: Bool
 
+    /// Preferred compute units for local inference backends (GGUF/Core ML).
+    @Published var localComputePreference: LocalComputePreference
+
+    /// Controls whether the first fallback model participates in routing.
     @Published var enableFirstFallback: Bool
+    /// Controls whether the second fallback model participates in routing.
     @Published var enableSecondFallback: Bool
+    /// Model used when the primary pathway fails.
     @Published var firstFallback: LLMModelType
+    /// Secondary fallback when both primary and first fallback are unavailable.
     @Published var secondFallback: LLMModelType
 
     // Responses API (OpenAI) options
+    /// Whether to send the ``reasoning`` flag to OpenAI Responses API.
     @Published var responsesIncludeReasoning: Bool
+    /// Whether to request verbose traces from OpenAI Responses API.
     @Published var responsesIncludeVerbosity: Bool
+    /// Whether to connect prior chain-of-thought traces when enabled upstream.
     @Published var responsesIncludeCoT: Bool
+    /// Whether to explicitly enforce max token counts with the Responses API.
     @Published var responsesIncludeMaxTokens: Bool
 
 
@@ -71,10 +97,12 @@ final class SettingsStore: ObservableObject {
     private let deviceCapabilities: DeviceCapabilities
     private var cancellables = Set<AnyCancellable>()
     private let applySubject = PassthroughSubject<Void, Never>()
+    /// Tracks whether the user manually picked a primary model (vs. auto-selection).
     private var hasUserPrimaryOverride: Bool
     private var isApplyingProgrammaticSelection = false
 
     // MARK: - Model Availability
+    /// Models that can be shown in the primary picker given current hardware and installs.
     var primaryModelOptions: [LLMModelType] {
         var options: [LLMModelType] = []
 
@@ -115,6 +143,7 @@ final class SettingsStore: ObservableObject {
         return options
     }
 
+    /// Canonical fallback order before user-specific exclusions are applied.
     private var fallbackBaseOptions: [LLMModelType] {
         var ordered: [LLMModelType] = []
         var seen = Set<LLMModelType>()
@@ -145,6 +174,7 @@ final class SettingsStore: ObservableObject {
         return ordered
     }
 
+    /// Ordered fallback candidates filtered by the provided exclusion list.
     func fallbackOptions(excluding disallowed: Set<LLMModelType>) -> [LLMModelType] {
         var ordered: [LLMModelType] = []
         var seen = Set<LLMModelType>()
@@ -162,6 +192,7 @@ final class SettingsStore: ObservableObject {
         return ordered
     }
 
+    /// Updates the selected model without marking the change as a user override.
     private func setSelectedModelProgrammatically(_ newValue: LLMModelType) {
         guard selectedModel != newValue else { return }
         isApplyingProgrammaticSelection = true
@@ -169,6 +200,7 @@ final class SettingsStore: ObservableObject {
         isApplyingProgrammaticSelection = false
     }
 
+    /// Validates that a given model can run on the current hardware/configuration.
     private func isPrimarySelectionAvailable(_ selection: LLMModelType) -> Bool {
         switch selection {
         case .appleIntelligence:
@@ -231,6 +263,8 @@ final class SettingsStore: ObservableObject {
         self.topK = (defaults.object(forKey: Keys.topK) as? Int) ?? 3
 
         self.lenientRetrievalMode = defaults.object(forKey: Keys.lenient) as? Bool ?? false
+        self.localComputePreference = LocalComputePreference.load(
+            from: defaults, key: Keys.localComputePreference, fallback: .automatic)
 
         self.enableFirstFallback = defaults.object(forKey: Keys.enableFB1) as? Bool ?? true
         self.enableSecondFallback = defaults.object(forKey: Keys.enableFB2) as? Bool ?? true
@@ -277,6 +311,7 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - Pipelines
+    /// Wires change observers so `@Published` values stay persisted and applied.
     private func setupPipelines() {
         $selectedModel
             .sink { [weak self] _ in
@@ -305,6 +340,7 @@ final class SettingsStore: ObservableObject {
             $enableSecondFallback.map { _ in () }.eraseToAnyPublisher(),
             $firstFallback.map { _ in () }.eraseToAnyPublisher(),
             $secondFallback.map { _ in () }.eraseToAnyPublisher(),
+            $localComputePreference.map { _ in () }.eraseToAnyPublisher(),
             $responsesIncludeReasoning.map { _ in () }.eraseToAnyPublisher(),
             $responsesIncludeVerbosity.map { _ in () }.eraseToAnyPublisher(),
             $responsesIncludeCoT.map { _ in () }.eraseToAnyPublisher(),
@@ -323,8 +359,9 @@ final class SettingsStore: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.objectWillChange.send()
+                // Normalise selections before invalidating views so Pickers never render stale tags.
                 self.sanitizeModelSelectionForPlatform()
+                self.objectWillChange.send()
             }
             .store(in: &cancellables)
 
@@ -352,6 +389,7 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - Persistence
+    /// Writes the current in-memory values to `UserDefaults`.
     private func persistAll() {
         defaults.set(selectedModel.rawValue, forKey: Keys.selectedModel)
         defaults.set(openaiAPIKey, forKey: Keys.openaiAPIKey)
@@ -371,6 +409,7 @@ final class SettingsStore: ObservableObject {
         defaults.set(enableSecondFallback, forKey: Keys.enableFB2)
         defaults.set(firstFallback.rawValue, forKey: Keys.firstFB)
         defaults.set(secondFallback.rawValue, forKey: Keys.secondFB)
+    localComputePreference.persist(in: defaults, key: Keys.localComputePreference)
 
         defaults.set(responsesIncludeReasoning, forKey: Keys.responsesIncludeReasoning)
         defaults.set(responsesIncludeVerbosity, forKey: Keys.responsesIncludeVerbosity)
@@ -380,6 +419,7 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - Side Effects (Debounced)
+    /// Emits telemetry once a batch of setting changes has settled.
     private func applySettingsDebounced() {
         // Phase 1: Emit lightweight telemetry and return
         // Phase 2: Wire model switching here (extract shared logic from SettingsRootView)
@@ -388,6 +428,7 @@ final class SettingsStore: ObservableObject {
             metadata: [
                 "model": selectedModel.rawValue,
                 "exec": executionContext.rawString,
+                "localCompute": localComputePreference.rawValue,
                 "openaiModel": openaiModel,
                 "fallbacks":
                     "\(enableFirstFallback ? "1" : "0")\(enableSecondFallback ? "+1" : "")",
@@ -398,6 +439,7 @@ final class SettingsStore: ObservableObject {
 // MARK: - Platform Normalisation
 
 extension SettingsStore {
+    /// Ensures persisted selections remain valid for the running platform.
     /// Ensures persisted selections remain valid for the running platform.
     fileprivate func sanitizeModelSelectionForPlatform() {
         let primaryOptions = primaryModelOptions
@@ -436,6 +478,7 @@ extension SettingsStore {
     }
 
     /// Aligns UI selection with auto-selected cartridges when the user has not made an explicit override.
+    /// Aligns UI selection with auto-selected cartridges when the user has not made an explicit override.
     private func applyAutoSelectionIfEligible(for backend: ModelBackend) {
         if isPrimarySelectionAvailable(selectedModel) {
             return
@@ -467,6 +510,7 @@ extension SettingsStore {
 // MARK: - ExecutionContext Raw Mapping
 
 extension ExecutionContext {
+    /// Persists the enum as a raw string for `UserDefaults`.
     fileprivate var rawString: String {
         switch self {
         case .automatic: return "automatic"
@@ -476,6 +520,7 @@ extension ExecutionContext {
         }
     }
 
+    /// Restores an `ExecutionContext` instance from a stored raw value.
     fileprivate static func from(raw: String) -> ExecutionContext {
         switch raw {
         case "onDeviceOnly": return .onDeviceOnly

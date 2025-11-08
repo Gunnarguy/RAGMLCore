@@ -15,6 +15,7 @@ struct DocumentLibraryView: View {
     @State private var showingProcessingSummary = false
     @State private var lastProcessedSummary: ProcessingSummary?
     @State private var showingContainerSettings = false
+    @State private var showingSemanticSearch = false
     let onViewVisualizations: (() -> Void)?
 
     init(ragService: RAGService, containerService: ContainerService, onViewVisualizations: (() -> Void)? = nil) {
@@ -103,6 +104,15 @@ struct DocumentLibraryView: View {
                     Label("Manage Library", systemImage: "gearshape")
                 }
             }
+
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showingSemanticSearch = true
+                } label: {
+                    Label("Semantic Search", systemImage: "text.magnifyingglass")
+                }
+                .disabled(ragService.documents.isEmpty)
+            }
             
             if filteredDocuments.count > 0 {
                 ToolbarItem(placement: .automatic) {
@@ -157,6 +167,12 @@ struct DocumentLibraryView: View {
             if let summary = ragService.lastProcessingSummary {
                 ProcessingSummaryView(summary: summary)
             }
+        }
+        .sheet(isPresented: $showingSemanticSearch) {
+            SemanticSearchView(
+                ragService: ragService,
+                containerService: containerService
+            )
         }
     }
 }

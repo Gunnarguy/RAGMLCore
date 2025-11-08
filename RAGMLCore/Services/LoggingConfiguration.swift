@@ -37,7 +37,7 @@ enum LoggingConfiguration {
     /// Enable/disable specific logging categories
     static var enabledCategories: Set<Category> = {
         #if DEBUG
-        return [.pipeline, .performance, .llm]  // Enable key categories in debug
+        return [.pipeline, .performance, .llm, .telemetry]  // Enable key categories in debug
         #else
         return []  // Minimal logging in release
         #endif

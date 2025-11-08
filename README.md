@@ -13,9 +13,12 @@
 1. Clone the repo and open `RAGMLCore.xcodeproj` with Xcode 16 or newer.
 2. Select the `RAGMLCore` target and run the app (⌘R).
 3. Head to **Settings → AI Model** and choose your primary pathway:
-     - Apple Intelligence (auto on-device with Private Cloud Compute fallback)
+     - Apple Intelligence (on-device with automatic Private Cloud Compute escalation)
+     - ChatGPT Extension (Apple Intelligence bridge to GPT on iOS 18.1+, user consent per query)
      - OpenAI Direct (bring your own API key)
-     - On-Device Analysis (extractive QA, always available)
+     - GGUF Local (in-process llama.cpp runtime on iOS once a cartridge is installed)
+     - Core ML Local (bundle your own `.mlpackage`, runs on-device via Neural Engine)
+     - On-Device Analysis (extractive QA fallback that never leaves the device)
 4. Import PDFs or text files in the **Documents** tab.
 5. Ask grounded questions from the **Chat** tab; telemetry and retrieval details stream live.
 
@@ -37,17 +40,23 @@ Each surface is tuned for large knowledge bases: pagination keeps the chat perfo
 ## Pipeline Overview
 
 ```text
-User Document → DocumentProcessor → SemanticChunker
-                         → EmbeddingService (NLEmbedding, 512 dim)
-                         → VectorDatabase (cosine search, cached norms)
-                         → RAGService orchestrates query
-Query → EmbeddingService → VectorDatabase → Context Builder → LLMService
-Result → Streaming response + metrics + retrieved citations
+User Document ──▶ DocumentProcessor ──▶ SemanticChunker (target 400 words · 75 overlap · clamps 100–800)
+                         └─▶ EmbeddingService (NLEmbedding 512-dim, cached norms)
+                         └─▶ VectorStoreRouter ──▶ PersistentVectorDatabase per container (LRU + norms)
+                         └─▶ HybridSearchService primes BM25 snapshot
+Query ──▶ QueryEnhancementService (synonym expansion) ──▶ EmbeddingService
+     └─▶ HybridSearchService (vector cosine + BM25, reciprocal-rank fusion)
+     └─▶ RAGEngine MMR diversification & context assembly
+     └─▶ LLMService (selected model + fallback chain with tool calling)
+Result ──▶ Streaming response + telemetry + citations
 ```
 
 ### Model Flow & Fallbacks
 
-**Privacy-first RAG for iOS 26** · Import documents · Ask natural-language questions · Get answers grounded in your own content.
+- Primary selection comes from `LLMModelType` (Apple Intelligence, ChatGPT Extension, OpenAI Direct, GGUF Local, Core ML Local, On-Device Analysis) and is persisted in `SettingsStore`.
+- `RAGService` wires the chosen service with agentic tool handlers and builds a fallback ladder: Apple Foundation Models (if available on iOS 26) → On-Device Analysis.
+- Optional first/second fallback toggles in Settings let you pre-authorize automatic failover without touching the UI mid-session.
+- Local cartridges (GGUF/Core ML/MLX) are managed through the Model Manager, persisted via `ModelRegistry`, and activated at startup when present.
 
 ---
 
@@ -55,7 +64,7 @@ Result → Streaming response + metrics + retrieved citations
 
 - **Document Library** – Drop in PDFs, Markdown, or Office docs and watch a live progress overlay while they are parsed, chunked, and embedded on-device.
 - **Chat Workspace** – Ask follow-up questions, inspect retrieved context snippets, and view real-time telemetry (TTFT, tokens/sec, retrieval cost).
-- **Settings Hub** – Toggle between Apple Intelligence, OpenAI, and local extractive QA, configure fallbacks, API keys, and Private Cloud Compute permissions.
+- **Settings Hub** – Toggle between Apple Intelligence, ChatGPT Extension, OpenAI, GGUF/Core ML cartridges, and on-device analysis; configure fallbacks, API keys, and Private Cloud Compute permissions.
 - **Telemetry Dashboard** – Inspect the pipeline timeline, throughput, and latency when validating larger corpora or tuning the system.
 
 Everything is private by default; nothing leaves the device unless you explicitly connect an external LLM.
@@ -63,10 +72,10 @@ Everything is private by default; nothing leaves the device unless you explicitl
 ## Feature Highlights
 
 - Universal document ingestion with PDFKit + Vision OCR, plain-text, Markdown, code, CSV, and Office formats.
-- Semantic chunking (400 words · 50 word overlap) backed by `NLEmbedding` for 512‑dim vectors generated on-device.
-- Vector search with cached cosine similarity and pre-computed norms for fast retrieval.
-- Multiple LLM pathways with automatic fallbacks: Apple Foundation Models → OpenAI Direct → On-Device Analysis.
-- SwiftUI interface optimised for performance (message pagination, streaming, telemetry overlays).
+- Adaptive semantic chunking (target 400 words, clamps 100–800, 75-word overlap) with diagnostics, metadata, and language detection baked in.
+- Hybrid retrieval: query expansion + vector search + BM25 fusion + MMR diversification to keep answers grounded and diverse.
+- Multiple LLM pathways with configurable fallbacks: Apple Intelligence, ChatGPT Extension, OpenAI Direct, GGUF Local, Core ML Local, and On-Device Analysis.
+- SwiftUI interface optimised for performance (message pagination, streaming in ~10-char bursts, telemetry overlays, container-aware caches).
 
 ## Architecture Snapshot
 
@@ -75,15 +84,17 @@ User
  │      ChatView · DocumentLibrary · Settings · Telemetry
  ▼
 @MainActor RAGService (state + orchestration)
- ├─ DocumentProcessor      → PDFKit / Vision / TextKit
- ├─ EmbeddingService       → NLEmbedding (512-dim)
- ├─ VectorDatabase         → In-memory cosine search + cache
- └─ LLMService (protocol)  → Apple FM · OpenAI · On-Device QA
+ ├─ DocumentProcessor        → PDFKit / Vision / TextKit
+ ├─ SemanticChunker          → Diagnostics, topic boundaries, 75-word overlap
+ ├─ EmbeddingService         → NLEmbedding 512-dim provider, cached norms
+ ├─ VectorStoreRouter        → PersistentVectorDatabase · optional Vectura HNSW
+ ├─ HybridSearchService      → Vector + BM25 fusion, RAGEngine offloads math
+ └─ LLMService (protocol)    → Apple FM · ChatGPT Ext · OpenAI · GGUF · Core ML · On-Device QA
 ```
 
-- **RAGService** manages ingestion, querying, live status, and telemetry.
-- **Protocol-based services** let you swap vector stores or LLMs without touching UI code.
-- **Async/await throughout** keeps the UI responsive; all @Published state is updated on the main actor.
+- **RAGService** manages ingestion, querying, telemetry, and tool execution while respecting MainActor state.
+- **Protocol-first services** let you swap processors, embeddings, vector stores, or LLMs without touching SwiftUI.
+- **RAGEngine** offloads heavy math (vector search, BM25, MMR, context assembly) to keep UI responsive.
 
 ### Concurrency and Performance
 
@@ -97,10 +108,13 @@ User
 | Module | Responsibility | Key Notes |
 | --- | --- | --- |
 | `DocumentProcessor` | Parse + chunk documents | PDFKit, Vision OCR fallback, semantic paragraphs |
-| `EmbeddingService` | Generate embeddings + cosine similarity | Validates NaNs, caches norms |
-| `VectorDatabase` | Store/search chunk vectors | Thread-safe, LRU cache, ready for swap-in persistence |
-| `LLMService` | Abstract generation | Apple Intelligence, OpenAI, On-Device Analysis, future CoreML |
-| `RAGService` | Orchestrator + state | Manages ingestion, query flow, errors, telemetry |
+| `SemanticChunker` | Build overlap-aware chunks | Language detection, topic boundaries, metadata, clamps 100–800 |
+| `EmbeddingService` | Generate embeddings + cosine similarity | NLEmbedding provider, cached norms, NaN guards |
+| `VectorStoreRouter` | Provide per-container vector DB | PersistentVectorDatabase default, optional Vectura HNSW, 5-min LRU cache |
+| `HybridSearchService` | Fuse vector + keyword signals | BM25 snapshotting, reciprocal-rank fusion, off-main via `RAGEngine` |
+| `VectorDatabase` | Store/search chunk vectors | Persistent JSON storage, proactive norm caching, streaming batch saves |
+| `LLMService` | Abstract generation | Apple Intelligence, ChatGPT Extension, OpenAI, GGUF Local, Core ML Local, On-Device Analysis |
+| `RAGService` | Orchestrator + state | Manages ingestion, hybrid search, MMR, telemetry, tool calls |
 
 ## UI Layer Map
 
@@ -121,13 +135,14 @@ Shared models (e.g. `LLMModelType`, `RAGQuery`) live under `Models/`. Services r
 
 ## End-to-End Pipeline
 
-1. **Import** – User selects a document. Security-scoped resource access is established.
-2. **Parse & Chunk** – `DocumentProcessor` extracts text, builds semantic chunks (overlap keeps answers grounded).
-3. **Embed** – `EmbeddingService` calls `NLEmbedding.wordEmbedding`, averages token vectors, and caches norms.
-4. **Index** – `VectorDatabase` stores chunk metadata + embeddings.
-5. **Ask** – User query is embedded, nearest neighbours fetched, and context is trimmed to fit the selected LLM.
-6. **Generate** – `LLMService` routes to the preferred model (Apple FM / OpenAI / On-device QA) and streams tokens back.
-7. **Present** – Chat UI renders streaming output with retrieved snippets and telemetry metrics.
+1. **Import** – User selects a document; security-scoped resource access is opened for ingestion.
+2. **Parse & Chunk** – `DocumentProcessor` extracts text while `SemanticChunker` builds overlap-aware chunks with metadata and diagnostics.
+3. **Embed** – `EmbeddingService` uses `NLEmbedding.wordEmbedding`, averages token vectors, and caches norms for reuse.
+4. **Index** – `VectorStoreRouter` routes to a per-container `PersistentVectorDatabase`, persists chunks, and updates BM25 snapshots.
+5. **Expand & Retrieve** – `QueryEnhancementService` generates variations, `HybridSearchService` fuses vector + BM25 results off-main.
+6. **Diversify** – `RAGEngine` applies MMR to keep context diverse before context window assembly.
+7. **Generate** – `LLMService` streams the answer from the active model (with automatic fallback if the primary fails).
+8. **Present** – Chat UI renders streaming output with telemetry, source citations, and container-aware metrics.
 
 ## Build & Run
 
@@ -139,7 +154,7 @@ Shared models (e.g. `LLMModelType`, `RAGQuery`) live under `Models/`. Services r
 
 - **OpenAI**: Enter your API key under Settings → OpenAI Configuration. Pick models such as `gpt-4o-mini`, `o1`, or `gpt-5`.
 - **Private Cloud Compute**: Toggle permission and execution context (automatic / on-device / prefer cloud / cloud only).
-- **Fallbacks**: Choose up to two LLM fallbacks; the pipeline automatically uses on-device analysis if all else fails.
+- **Fallbacks**: Toggle first/second fallbacks in Settings; the runtime will step through Apple Intelligence (if available) → On-Device Analysis when the primary fails.
 
 ## Privacy Checklist
 
@@ -161,7 +176,7 @@ Historical design docs, performance logs, and roadmap notes now live in `docs/re
 
 1. Branch from `main`.
 2. Implement your change using async/await, avoid blocking the main actor, and follow the protocol-first patterns.
-3. Run `xcodebuild -scheme RAGMLCore -project RAGMLCore.xcodeproj -destination 'platform=iOS,name=iPhone 17 Pro Max' build` (or from Xcode) to ensure a clean build.
+3. Run `xcodebuild -scheme RAGMLCore -project RAGMLCore.xcodeproj -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' build` (or use Xcode). Use `clean_and_rebuild.sh` if DerivedData gets noisy.
 4. Update documentation if you touch architecture, privacy, or user-facing flows.
 5. Open a PR with screenshots or logs for any UI/UX changes.
 
@@ -171,6 +186,6 @@ MIT License – see `LICENSE` for details.
 
 ---
 
-**Status** · Core RAG pipeline production ready · Apple Foundation Models awaiting physical device validation.  
-**Version** · v0.1.0  
-**Last Updated** · October 2025
+**Status** · Core RAG pipeline production ready · Hybrid search + local cartridge manager (GGUF/Core ML) shipping in beta.  
+**Version** · 1.0.0  
+**Last Updated** · November 2025

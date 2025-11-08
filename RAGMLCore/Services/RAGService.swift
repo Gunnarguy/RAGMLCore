@@ -254,6 +254,54 @@ class RAGService: ObservableObject {
         }
     }
 
+    /// Run a lightweight semantic search against the active container.
+    /// Returns ranked chunks enriched with document metadata for UI display.
+    func semanticSearch(
+        query: String,
+        topK: Int = 6,
+        minSimilarity: Float? = nil
+    ) async throws -> [RetrievedChunk] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw RAGServiceError.emptyQuery }
+
+        let queryEmbedding = try await embeddingService.generateEmbedding(for: trimmed)
+        let selectedId = await MainActor.run {
+            self.currentQueryContainerId ?? self.containerService.activeContainerId
+        }
+        let database = await dbFor(selectedId)
+        let searchCount = max(1, min(topK * 2, topK + 4))
+        var candidates = try await database.search(embedding: queryEmbedding, topK: searchCount)
+
+        if let threshold = minSimilarity {
+            let engine = RAGEngine()
+            candidates = await engine.filterBySimilarity(chunks: candidates, min: threshold)
+        }
+
+        if candidates.count > topK {
+            candidates = Array(candidates.prefix(topK))
+        }
+
+        let ranked = candidates.enumerated().map { index, chunk in
+            RetrievedChunk(
+                chunk: chunk.chunk,
+                similarityScore: chunk.similarityScore,
+                rank: index + 1
+            )
+        }
+
+        let enriched = await MainActor.run { self.addSourceInfo(ranked) }
+        TelemetryCenter.emit(
+            .retrieval,
+            title: "Semantic search",
+            metadata: [
+                "query": String(trimmed.prefix(80)),
+                "results": "\(enriched.count)",
+                "topK": "\(topK)"
+            ]
+        )
+        return enriched
+    }
+
     // MARK: - Document Management
 
     /// Add a document to the knowledge base
@@ -958,7 +1006,7 @@ class RAGService: ObservableObject {
                 if filteredChunks.isEmpty {
                     if acceptanceOverride || lenient || isTrivial {
                         // Use top reranked results directly under override/lenient conditions
-                        filteredChunks = Array(rerankedChunks.prefix(effectiveTopK))
+                        filteredChunks = Array(rerankedChunks.prefix(effectiveTopK * 2))
                         Log.info(
                             "   ✅ Acceptance override applied; proceeding with top reranked results",
                             category: .retrieval)
@@ -1021,6 +1069,45 @@ class RAGService: ObservableObject {
                             ]
                         )
                     }
+                }
+
+                // Step 4.4: Ensure multiple documents are represented before diversification
+                let uniqueDocCount = Set(rerankedChunks.map { $0.chunk.documentId }).count
+                if uniqueDocCount > 1 {
+                    let desiredDocCoverage = min(
+                        uniqueDocCount,
+                        max(2, min(effectiveTopK, 3))
+                    )
+                    let maxCandidates = max(effectiveTopK * 2, filteredChunks.count)
+                    let (augmented, addedDocs) = ensureDocumentCoverage(
+                        candidates: filteredChunks,
+                        fallbackPool: rerankedChunks,
+                        desiredDocuments: desiredDocCoverage,
+                        maxCandidates: maxCandidates
+                    )
+                    if filteredChunks.count != augmented.count || addedDocs > 0 {
+                        if addedDocs > 0 {
+                            Log.info(
+                                "   🔁 Expanded context to cover \(addedDocs) additional document(s)",
+                                category: .retrieval)
+                            TelemetryCenter.emit(
+                                .retrieval,
+                                title: "Document coverage boost",
+                                metadata: [
+                                    "addedDocs": "\(addedDocs)",
+                                    "targetDocs": "\(desiredDocCoverage)",
+                                    "uniqueDocs": "\(uniqueDocCount)",
+                                ]
+                            )
+                        } else {
+                            Log.info(
+                                "   🔁 Normalized candidate pool to \(augmented.count) chunks",
+                                category: .retrieval)
+                        }
+                        filteredChunks = augmented
+                    }
+                } else if filteredChunks.isEmpty {
+                    filteredChunks = Array(rerankedChunks.prefix(max(effectiveTopK, 3)))
                 }
 
                 // Step 4.5: Apply MMR for diversity (critical for medical/comprehensive coverage)
@@ -1375,7 +1462,7 @@ class RAGService: ObservableObject {
                     Log.info(
                         "✅ Enhanced RAG pipeline complete in \(String(format: "%.2f", totalTime))s",
                         category: .pipeline)
-                    logQueryStats(query: question, response: response)
+                    await self.logQueryStats(query: question, response: response)
 
                     return response
 
@@ -1895,7 +1982,7 @@ class RAGService: ObservableObject {
 
     /// Log structured query statistics for debugging and telemetry dashboards
     @MainActor
-    private func logQueryStats(query: String, response: RAGResponse) {
+    private func logQueryStats(query: String, response: RAGResponse) async {
         let queryWords = wordCount(of: query)
         let responseWords = wordCount(of: response.generatedResponse)
         let chunkWordCounts = response.retrievedChunks.map { wordCount(of: $0.chunk.content) }
@@ -1943,6 +2030,46 @@ class RAGService: ObservableObject {
 
     nonisolated private func wordCount(of text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
+    /// Guarantee that at least a subset of the retrieved chunks span multiple documents when available.
+    private func ensureDocumentCoverage(
+        candidates: [RetrievedChunk],
+        fallbackPool: [RetrievedChunk],
+        desiredDocuments: Int,
+        maxCandidates: Int
+    ) -> (chunks: [RetrievedChunk], addedDocuments: Int) {
+        let limit = max(1, maxCandidates)
+        if desiredDocuments <= 1 {
+            let baseline = candidates.isEmpty ? fallbackPool : candidates
+            return (Array(baseline.prefix(limit)), 0)
+        }
+
+        var augmented = candidates
+        if augmented.count > limit {
+            augmented = Array(augmented.prefix(limit))
+        }
+
+        var seenDocuments = Set(augmented.map { $0.chunk.documentId })
+        var addedDocs = 0
+
+        for candidate in fallbackPool {
+            if augmented.count >= limit { break }
+            let docId = candidate.chunk.documentId
+            if seenDocuments.contains(docId) { continue }
+            augmented.append(candidate)
+            seenDocuments.insert(docId)
+            addedDocs += 1
+            if seenDocuments.count >= desiredDocuments { break }
+        }
+
+        if augmented.isEmpty {
+            let fallback = Array(fallbackPool.prefix(limit))
+            let coveredDocs = Set(fallback.map { $0.chunk.documentId }).count
+            return (fallback, min(desiredDocuments, coveredDocs))
+        }
+
+        return (augmented, addedDocs)
     }
 
     // MARK: - MainActor snapshot helpers (async to avoid superfluous await warnings)

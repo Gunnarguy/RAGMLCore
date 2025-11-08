@@ -65,6 +65,7 @@ final class TelemetryCenter: ObservableObject {
     @Published private(set) var events: [TelemetryEvent] = []
 
     private let maxEvents = 500
+    private let mirroredCategories: Set<TelemetryCategory> = [.system, .generation, .retrieval, .error]
 
     func log(
         _ category: TelemetryCategory,
@@ -82,6 +83,7 @@ final class TelemetryCenter: ObservableObject {
             duration: duration
         )
         append(event)
+        mirrorToConsoleIfNeeded(event)
     }
 
     func append(_ event: TelemetryEvent) {
@@ -110,6 +112,33 @@ final class TelemetryCenter: ObservableObject {
                 metadata: metadata,
                 duration: duration
             )
+        }
+    }
+
+    private func mirrorToConsoleIfNeeded(_ event: TelemetryEvent) {
+        let shouldMirror = mirroredCategories.contains(event.category) || event.severity != .info
+        guard shouldMirror else { return }
+
+        let metadataString: String
+        if event.metadata.isEmpty {
+            metadataString = ""
+        } else {
+            let pairs = event.metadata
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: ", ")
+            metadataString = " – {\(pairs)}"
+        }
+
+        let message = "[\(event.category.rawValue.uppercased())] \(event.title)\(metadataString)"
+
+        switch event.severity {
+        case .info:
+            Log.info(message, category: .telemetry)
+        case .warning:
+            Log.warning(message, category: .telemetry)
+        case .error:
+            Log.error(message, category: .telemetry)
         }
     }
 }

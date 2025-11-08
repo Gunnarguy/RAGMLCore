@@ -167,13 +167,21 @@ struct ModelSelectionView: View {
     var body: some View {
         List {
             Section("Primary Model") {
-                if settings.primaryModelOptions.isEmpty {
+                let options = primaryPickerOptions
+
+                if options.isEmpty {
                     Text("No Apple-native models available on this device.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
-                    Picker("AI Model", selection: $settings.selectedModel) {
-                        ForEach(settings.primaryModelOptions, id: \.self) { t in
+                    Picker(
+                        "AI Model",
+                        selection: Binding(
+                            get: { selectedModelForPicker },
+                            set: { settings.selectedModel = $0 }
+                        )
+                    ) {
+                        ForEach(options, id: \.self) { t in
                             Label(t.displayName, systemImage: t.iconName).tag(t)
                         }
                     }
@@ -187,6 +195,31 @@ struct ModelSelectionView: View {
             }
         }
         .navigationTitle("Model Selection")
+    }
+}
+
+private extension ModelSelectionView {
+    /// Ensures the Picker sees a stable option set that always contains the active selection.
+    var primaryPickerOptions: [LLMModelType] {
+        var options = settings.primaryModelOptions
+        if !options.contains(settings.selectedModel) {
+            options.append(settings.selectedModel)
+        }
+        var deduped: [LLMModelType] = []
+        deduped.reserveCapacity(options.count)
+        var seen = Set<LLMModelType>()
+        for option in options {
+            if seen.insert(option).inserted {
+                deduped.append(option)
+            }
+        }
+        return deduped
+    }
+
+    /// Provides a fallback selection should the underlying options lag behind state changes briefly.
+    var selectedModelForPicker: LLMModelType {
+        guard let first = primaryPickerOptions.first else { return settings.selectedModel }
+        return primaryPickerOptions.contains(settings.selectedModel) ? settings.selectedModel : first
     }
 }
 

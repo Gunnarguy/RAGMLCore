@@ -80,20 +80,50 @@ final class ModelRegistry: ObservableObject {
         }
     }
 
-    private func deleteFileAsync(at url: URL) {
+    private func deleteFileAsync(at url: URL, retryCount: Int = 2) {
         let path = url.path
-        saveQueue.async {
+        saveQueue.async { [weak self] in
+            guard let self else { return }
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: path) else { return }
+            guard fileManager.isDeletableFile(atPath: path) else {
+                Task { @MainActor [weak self] in
+                    self?.logDeletionFailure(url: url, reason: "File not deletable at path")
+                }
+                return
+            }
             do {
-                try FileManager.default.removeItem(atPath: path)
+                try fileManager.removeItem(atPath: path)
                 Log.info(
                     "[ModelRegistry] Deleted model file: \(url.lastPathComponent)",
                     category: .pipeline)
             } catch {
-                Log.warning(
-                    "[ModelRegistry] Failed to delete model file: \(error.localizedDescription)",
-                    category: .pipeline)
+                if retryCount > 0,
+                   let nsError = error as NSError?,
+                   nsError.domain == NSPOSIXErrorDomain,
+                   nsError.code == Int(POSIXError.Code.EBUSY.rawValue) {
+                    let delay = DispatchTimeInterval.milliseconds(400)
+                    self.saveQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self else { return }
+                        Task { @MainActor [weak self] in
+                            self?.deleteFileAsync(at: url, retryCount: retryCount - 1)
+                        }
+                    }
+                } else {
+                    Task { @MainActor [weak self] in
+                        self?.logDeletionFailure(
+                            url: url,
+                            reason: error.localizedDescription)
+                    }
+                }
             }
         }
+    }
+
+    private func logDeletionFailure(url: URL, reason: String) {
+        Log.warning(
+            "[ModelRegistry] Failed to delete model file: \(reason)",
+            category: .pipeline)
     }
 
     // MARK: - CRUD

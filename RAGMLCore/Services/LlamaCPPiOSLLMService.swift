@@ -15,9 +15,12 @@ import Foundation
 
         // MARK: - Properties
 
-        private let modelId: UUID
-        private let installedModel: InstalledModel
-        private let runtime = GGUFClientRuntime()
+    private static let computePreferenceKey = "ggufLocalComputePreference"
+
+    private let modelId: UUID
+    private let installedModel: InstalledModel
+    private let computePreference: LocalComputePreference
+    private let runtime = GGUFClientRuntime()
         var toolHandler: RAGToolHandler?
 
         var isAvailable: Bool {
@@ -31,9 +34,10 @@ import Foundation
 
         // MARK: - Init
 
-        init(modelId: UUID, installedModel: InstalledModel) {
+        init(modelId: UUID, installedModel: InstalledModel, computePreference: LocalComputePreference) {
             self.modelId = modelId
             self.installedModel = installedModel
+            self.computePreference = computePreference
             let shortId = String(modelId.uuidString.prefix(8))
             TelemetryCenter.emit(
                 .system,
@@ -67,7 +71,11 @@ import Foundation
                 return nil
             }
 
-            return LlamaCPPiOSLLMService(modelId: id, installedModel: model)
+            return LlamaCPPiOSLLMService(
+                modelId: id,
+                installedModel: model,
+                computePreference: currentPreference(from: defaults)
+            )
         }
 
         /// Persist the selected model ID to UserDefaults
@@ -149,7 +157,7 @@ import Foundation
 
         private func makeParameter(from config: InferenceConfig) -> LlamaClient.Parameter {
             let contextTokens = installedModel.contextWindow ?? max(config.maxTokens * 2, 2048)
-            return LlamaClient.Parameter(
+            var parameter = LlamaClient.Parameter(
                 context: contextTokens,
                 seed: nil,
                 numberOfThreads: ProcessInfo.processInfo.activeProcessorCount,
@@ -167,6 +175,19 @@ import Foundation
                     disableAutoPause: false
                 )
             )
+            switch computePreference {
+            case .automatic:
+                parameter.numberOfThreads = ProcessInfo.processInfo.activeProcessorCount
+                parameter.options.gpuLayerOverride = nil
+            case .gpuPreferred:
+                parameter.numberOfThreads = ProcessInfo.processInfo.activeProcessorCount
+                parameter.options.gpuLayerOverride = nil
+            case .cpuOnly:
+                parameter.numberOfThreads = ProcessInfo.processInfo.processorCount
+                parameter.options.gpuLayerOverride = 0
+                parameter.batch = min(parameter.batch, 256)
+            }
+            return parameter
         }
 
         private func makeMessages(prompt: String, context: String?) -> [LLMInput.Message] {
@@ -191,16 +212,31 @@ import Foundation
         }
 
         private func telemetryMetadata(for config: InferenceConfig, url: URL) -> [String: String] {
-            [
+            let threadCount: Int
+            switch computePreference {
+            case .cpuOnly:
+                threadCount = ProcessInfo.processInfo.processorCount
+            default:
+                threadCount = ProcessInfo.processInfo.activeProcessorCount
+            }
+            return [
                 "model": installedModel.name,
                 "file": url.lastPathComponent,
                 "maxTokens": "\(config.maxTokens)",
                 "temperature": String(format: "%.2f", config.temperature),
                 "topK": "\(config.topK)",
                 "topP": String(format: "%.2f", config.topP),
-                "threads": "\(ProcessInfo.processInfo.activeProcessorCount)",
+                "threads": "\(threadCount)",
                 "stop": config.stopSequences.joined(separator: ","),
+                "computePref": computePreference.rawValue,
             ]
+        }
+    }
+
+    private extension LlamaCPPiOSLLMService {
+        static func currentPreference(from defaults: UserDefaults) -> LocalComputePreference {
+            LocalComputePreference.load(
+                from: defaults, key: computePreferenceKey, fallback: .automatic)
         }
     }
 

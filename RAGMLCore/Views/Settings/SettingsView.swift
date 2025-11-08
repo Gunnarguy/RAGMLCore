@@ -59,29 +59,30 @@ struct SettingsView: View {
             normalizeFallbacks()
             applyNow()
         }
-        .onChange(of: settings.firstFallback) {
+        .onChange(of: settings.firstFallback, initial: false) {
             normalizeFallbacks()
             if settings.enableFirstFallback {
                 applyNow()
             }
         }
-        .onChange(of: settings.secondFallback) {
+        .onChange(of: settings.secondFallback, initial: false) {
             normalizeFallbacks()
             if settings.enableSecondFallback {
                 applyNow()
             }
         }
-        .onChange(of: settings.enableFirstFallback) {
+        .onChange(of: settings.enableFirstFallback, initial: false) {
             refreshPipeline()
             applyNow()
         }
-        .onChange(of: settings.enableSecondFallback) {
+        .onChange(of: settings.enableSecondFallback, initial: false) {
             refreshPipeline()
             applyNow()
         }
-        .onChange(of: settings.allowPrivateCloudCompute) { refreshPipeline() }
+        .onChange(of: settings.allowPrivateCloudCompute, initial: false) { refreshPipeline() }
+        .onChange(of: settings.localComputePreference, initial: false) { applyNow() }
         #if os(macOS)
-            .onChange(of: settings.openaiAPIKey) {
+            .onChange(of: settings.openaiAPIKey, initial: false) {
                 apiKeyStatus = .unknown
                 refreshPipeline()
             }
@@ -261,136 +262,187 @@ extension SettingsView {
         Divider()
             .padding(.vertical, 6)
 
-        VStack(alignment: .leading, spacing: 10) {
-            let ggufModels = modelRegistry.installed.filter { $0.backend == .gguf }
-            let coreMLModels = modelRegistry.installed.filter { $0.backend == .coreML }
-            HStack {
-                Label("Local Model Slots", systemImage: "externaldrive")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if downloadService.isLoadingCatalog {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                } else {
-                    Text("\(modelRegistry.installed.count) installed")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            localModelsHeader
+            localModelsList
+            localModelActionButtons
+        }
+        .padding(.top, 8)
+    }
 
-            if modelRegistry.installed.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No local models yet")
-                        .font(.caption.weight(.medium))
-                    Text("Download GGUF or Core ML packs to unlock fully offline inference.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(12)
-                .background(Color.accentColor.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    @ViewBuilder
+    private var localModelsHeader: some View {
+        HStack {
+            Label("Local Models", systemImage: "externaldrive")
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+            computePreferenceMenu
+        }
+        HStack(spacing: 8) {
+            if downloadService.isLoadingCatalog {
+                ProgressView()
+                    .scaleEffect(0.7)
             } else {
-                let previewModels = Array(modelRegistry.installed.prefix(3))
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(previewModels) { model in
-                        LocalModelBadge(model: model, formatBytes: formatBytes)
-                        if model.id != previewModels.last?.id {
-                            Divider()
-                        }
-                    }
-                    if modelRegistry.installed.count > previewModels.count {
-                        Text(
-                            "+\(modelRegistry.installed.count - previewModels.count) more configured"
-                        )
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    }
-                }
-                .padding(12)
-                .background(DSColors.surface.opacity(0.9))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Text(localModelsSummaryText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
+            Text(computePreferenceSummary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        Text(localModelStatusText)
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
 
-            HStack {
+    @ViewBuilder
+    private var localModelsList: some View {
+        if installedLocalModels.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("No local models yet")
+                    .font(.caption.weight(.medium))
+                Text("Browse the gallery or import your own pack to enable fully offline chat.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(installedLocalModels) { model in
+                    Button {
+                        activateLocalModel(model)
+                    } label: {
+                        LocalModelRow(
+                            model: model,
+                            formatBytes: formatBytes,
+                            isActive: isActiveInstalledModel(model),
+                            canActivate: canActivateInstalledModel(model),
+                            activePreference: isActiveInstalledModel(model)
+                                ? settings.localComputePreference : nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canActivateInstalledModel(model))
+                }
+
+                Text("Tap a model to make it your local primary. Manage installs for more options.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localModelActionButtons: some View {
+        HStack {
+            Button {
+                showModelManager = true
+            } label: {
+                Label("Manage Models", systemImage: "slider.horizontal.3")
+                    .font(.callout.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+            Spacer(minLength: 12)
+
+            Menu {
                 Button {
                     showModelManager = true
                 } label: {
-                    Label("Manage Models", systemImage: "slider.horizontal.3")
-                        .font(.callout.weight(.semibold))
+                    Label("Browse Catalog", systemImage: "tray.and.arrow.down")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-
-                Spacer(minLength: 12)
-
-                if !ggufModels.isEmpty || !coreMLModels.isEmpty {
-                    Menu {
-                        if !ggufModels.isEmpty {
-                            Section("GGUF Models") {
-                                ForEach(ggufModels) { model in
-                                    Button {
-                                        Task {
-                                            await ModelActivationService.activate(
-                                                model, ragService: ragService, settings: settings)
-                                            await MainActor.run { refreshPipeline() }
-                                        }
-                                    } label: {
-                                        Label(
-                                            model.name,
-                                            systemImage: isActiveInstalledModel(model)
-                                                ? "checkmark.circle.fill" : "play.circle")
-                                    }
-                                    .disabled(!canActivateInstalledModel(model))
-                                }
-                            }
-                        }
-
-                        if !coreMLModels.isEmpty {
-                            Section("Core ML Models") {
-                                ForEach(coreMLModels) { model in
-                                    Button {
-                                        Task {
-                                            await ModelActivationService.activate(
-                                                model, ragService: ragService, settings: settings)
-                                            await MainActor.run { refreshPipeline() }
-                                        }
-                                    } label: {
-                                        Label(
-                                            model.name,
-                                            systemImage: isActiveInstalledModel(model)
-                                                ? "checkmark.circle.fill" : "play.circle")
-                                    }
-                                    .disabled(!canActivateInstalledModel(model))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Set Local Primary", systemImage: "sparkles.rectangle.stack")
-                            .font(.callout)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .controlSize(.small)
-                }
-
-                Menu {
-                    Button {
-                        showModelManager = true
-                    } label: {
-                        Label("Browse Model Gallery", systemImage: "tray.and.arrow.down")
-                    }
-                    Button {
-                        showModelManager = true
-                    } label: {
-                        Label("Import GGUF", systemImage: "square.and.arrow.down")
-                    }
+                Button {
+                    showModelManager = true
                 } label: {
-                    Label("Quick Actions", systemImage: "ellipsis.circle")
-                        .font(.callout)
+                    Label("Import Local Package", systemImage: "square.and.arrow.down")
                 }
-                .menuStyle(.borderlessButton)
+            } label: {
+                Label("More Actions", systemImage: "ellipsis.circle")
+                    .font(.callout)
             }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
         }
-        .padding(.top, 6)
+    }
+
+    private var installedLocalModels: [InstalledModel] {
+        modelRegistry.installed.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var activeLocalModel: InstalledModel? {
+        switch settings.selectedModel {
+        case .ggufLocal:
+            guard let id = selectedGGUFModelId else { return nil }
+            return installedLocalModels.first { $0.id == id }
+        case .coreMLLocal:
+            guard let id = selectedCoreMLModelId else { return nil }
+            return installedLocalModels.first { $0.id == id }
+        default:
+            return nil
+        }
+    }
+
+    private var localModelsSummaryText: String {
+        let count = installedLocalModels.count
+        return count == 0 ? "None installed" : "\(count) installed"
+    }
+
+    private var localModelStatusText: String {
+        if let active = activeLocalModel {
+            return "Currently using \(active.name) for offline inference."
+        }
+        if installedLocalModels.isEmpty {
+            return "Install a GGUF or Core ML pack to unlock on-device responses."
+        }
+        return "Tap a local model below to activate it for offline chat."
+    }
+
+    private var computePreferenceSummary: String {
+        "Compute: \(settings.localComputePreference.title)"
+    }
+
+    private func activateLocalModel(_ model: InstalledModel) {
+        guard canActivateInstalledModel(model) else { return }
+        Task {
+            await ModelActivationService.activate(
+                model, ragService: ragService, settings: settings)
+            await MainActor.run { refreshPipeline() }
+        }
+    }
+
+    @ViewBuilder
+    private var computePreferenceMenu: some View {
+        Menu {
+            ForEach(LocalComputePreference.allCases) { preference in
+                Button {
+                    settings.localComputePreference = preference
+                } label: {
+                    Label(preference.title, systemImage: preference.iconName)
+                    if preference == settings.localComputePreference {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: settings.localComputePreference.iconName)
+                Text(settings.localComputePreference.badgeText)
+                    .font(.caption.weight(.semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.12))
+            .clipShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -1097,7 +1149,19 @@ extension SettingsView {
     }
 
     fileprivate var availablePrimaryModels: [LLMModelType] {
-        settings.primaryModelOptions
+        var options = settings.primaryModelOptions
+        if !options.contains(settings.selectedModel) {
+            options.append(settings.selectedModel)
+        }
+        var deduped: [LLMModelType] = []
+        deduped.reserveCapacity(options.count)
+        var seen = Set<LLMModelType>()
+        for option in options {
+            if seen.insert(option).inserted {
+                deduped.append(option)
+            }
+        }
+        return deduped
     }
 
     fileprivate var firstFallbackOptions: [LLMModelType] {
@@ -1317,9 +1381,12 @@ private struct StageChip: View {
     }
 }
 
-private struct LocalModelBadge: View {
+private struct LocalModelRow: View {
     let model: InstalledModel
     let formatBytes: (Int64?) -> String
+    let isActive: Bool
+    let canActivate: Bool
+    let activePreference: LocalComputePreference?
 
     private var iconName: String {
         switch model.backend {
@@ -1329,20 +1396,29 @@ private struct LocalModelBadge: View {
         }
     }
 
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.1))
-                    .frame(width: 40, height: 40)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 42, height: 42)
                 Image(systemName: iconName)
+                    .font(.headline)
                     .foregroundColor(.accentColor)
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.name)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
                     .lineLimit(1)
+
                 HStack(spacing: 8) {
                     if let vendor = model.vendor {
                         Label(vendor, systemImage: "tag")
@@ -1354,19 +1430,78 @@ private struct LocalModelBadge: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+                    if let quant = model.quantization {
+                        Label(quant, systemImage: "dial.low")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if let meta = metadataLine() {
+                    Text(meta)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
 
             Spacer()
 
-            Text(model.backend.displayName)
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.accentColor.opacity(0.12))
-                .foregroundColor(.accentColor)
-                .clipShape(Capsule())
+            if isActive {
+                HStack(spacing: 6) {
+                    Label("Active", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.accentColor)
+                    if let preference = activePreference {
+                        Text(preference.badgeText)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                }
+            } else {
+                Image(systemName: "play.circle")
+                    .font(.title3)
+                    .foregroundColor(.accentColor.opacity(canActivate ? 1.0 : 0.4))
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isActive ? Color.accentColor : Color.clear, lineWidth: 1)
+        )
+        .opacity(canActivate ? 1 : 0.55)
+        .animation(.easeInOut(duration: 0.2), value: isActive)
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(isActive ? Color.accentColor.opacity(0.12) : DSColors.surface.opacity(0.9))
+    }
+
+    private func metadataLine() -> String? {
+        var components: [String] = []
+        if let installedText = installDescriptor() {
+            components.append(installedText)
+        }
+        if model.supportsToolUse {
+            components.append("Tool Calls")
+        }
+        if let context = model.contextWindow {
+            components.append("Context \(context)T")
+        }
+        return components.isEmpty ? nil : components.joined(separator: " · ")
+    }
+
+    private func installDescriptor() -> String? {
+        let relative = LocalModelRow.relativeFormatter.localizedString(
+            for: model.installedAt, relativeTo: Date())
+        return "Installed \(relative)"
     }
 }
 
