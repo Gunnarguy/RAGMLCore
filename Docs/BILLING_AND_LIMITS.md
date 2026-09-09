@@ -50,3 +50,110 @@ Enforcement logic is defined in [QuotaPolicy.swift](../OpenIntelligence/Services
 ## 4. Entitlement Reconciliation & Legacy Protection
 - **Grandfathering Protection:** A sticky paid-history protection state (`LegacyProtectionState`) is implemented. If a user has a historical paid transaction (subscription or non-consumable), [EntitlementStore.swift](../OpenIntelligence/Services/Billing/EntitlementStore.swift#L356) promotes their state to `.historicalPaidPurchase` or `.legacyDocumentPackOwner` on launch. This maintains their Lifetime access and protects their active document limits even if their StoreKit subscription has expired or is unrenewed.
 - **Local Simulation:** In `DEBUG` simulator builds, the app supports simulated billing overrides using `simulateDebugPurchase(_:)` to bypass StoreKit connection failures.
+
+---
+
+## 5. Promotional pricing and the launch sale
+
+*Added 2026-09-09.*
+
+### Regular prices, as App Store Connect holds them
+
+Only the USA price is set by hand. Apple generates the other 174 storefronts from it, and those
+generated figures are what customers actually pay, so they are read from the API rather than
+converted.
+
+| Currency | Lifetime Cohort | Pro Annual |
+|---|---|---|
+| USD | 59.99 | 29.99 |
+| GBP | 59.99 | 29.99 |
+| EUR | 69.99 | 34.99 |
+| CAD | 79.99 | 39.99 |
+| AUD | 99.99 | 49.99 |
+| INR | 5900 | 2999 |
+| JPY | 10000 | 5000 |
+| BRL | 399.90 | 199.90 |
+| MXN | 1299 | 599 |
+
+Across all 177 generated Lifetime territory prices, every currency resolves to exactly one
+amount, which is what makes `LaunchSale` safe to key by currency rather than territory. That is
+a property of this price schedule and not a guarantee from Apple, so
+`scripts/verify_sale_prices.py` re-checks it and reports drift.
+`[evidence_level: measured, confidence: exact, evidence_source: /v1/inAppPurchasePriceSchedules/6756638872/automaticPrices (177 rows) and /v1/subscriptions/6756638919/prices (175 rows), grouped by currency, read 2026-09-09]`
+
+US proceeds are a flat 85% of list under the Small Business Program, which the price point
+records show directly. The **blended** net across all territories is lower, 66.4%, because
+several storefronts quote VAT-inclusive prices that Apple remits. Use 66.4% for revenue
+forecasts and 85% only for US-only questions.
+`[evidence_level: measured, confidence: exact, evidence_source: proceeds field on USA price points (85%); SUM(proceeds_usd)/SUM(sales_usd) over the ten Lifetime rows in store_purchases, ~/ASC/data/asc.sqlite3, 2026-09-09. That archive is not version-controlled, so the figure is reproducible only while it exists.]`
+
+### How a discount is delivered, and why the app has to announce it
+
+A non-consumable cannot have a "sale" in the App Store sense. The only mechanism is a
+**temporary price change**, which App Store Connect accepts with a start and an end date and
+reverts on its own; the maximum length is one year.
+`[evidence_level: documented, confidence: exact, evidence_source: https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/schedule-price-changes-for-in-app-purchases, fetched 2026-09-09]`
+
+**The App Store shows no strikethrough, no "was/now" and no sale badge for in-app purchases.** A
+customer during a price change simply sees a smaller number. The discount therefore does not
+exist as a discount unless the app says so, which is what `LaunchSale` and the paywall banner
+are for.
+
+### What `LaunchSale` guarantees, and what it does not
+
+`OpenIntelligence/Features/Billing/LaunchSale.swift` advertises nothing unless both hold:
+
+1. `now` is inside `LaunchSale.window`.
+2. StoreKit's reported price is strictly below the regular price recorded for Lifetime **in
+   that customer's currency**.
+
+Condition 2 means a price change that was never scheduled, never reached a storefront, or has
+already reverted produces silence whatever the date says. The percentage comes from the two real
+numbers, rounded **down**, so the saving is never overstated, and it is computed per storefront
+because Apple rounds each territory to its own price point.
+
+**The limit, stated plainly.** Condition 2 is not "a sale is running", it is "the price is below
+a constant compiled into this build". Apple recalculates generated prices when tax and exchange
+rates move, so a table recorded today can be wrong in six months and the app would then
+advertise a discount nobody scheduled. Run `scripts/verify_sale_prices.py` before every sale.
+Separately, `EntitlementStore` caches its products, so `PlanUpgradeSheet` refreshes them on
+appear to keep the banner and the checkout price the same number.
+`[evidence_level: code_verified, confidence: high, evidence_source: LaunchSale.swift offer(for:storeProduct:now:), PlanUpgradeSheet.swift .task, OpenIntelligenceTests/Features/Billing/LaunchSaleTests.swift]`
+
+### Why only Lifetime is ever discounted
+
+Pro Annual and Pro Monthly are deliberately excluded, for two independent reasons.
+
+- **Pro Annual has already spent its introductory offer.** Its 7-day free trial is an
+  introductory offer, and a customer may redeem only one per subscription group, so a discount
+  offer would displace the trial rather than add to it.
+- **A temporary price change on a subscription creates a price increase later.** When the price
+  reverts, everyone who subscribed at the sale price faces an increase at renewal. Apple
+  requires consent where a region demands it, where the increase exceeds 50% and about US$50 a
+  year, or where the subscriber saw an increase in the last 12 months, and a subscriber who does
+  not consent has the subscription expire at the end of the current cycle.
+
+Lifetime is a non-consumable, so it reverts with no consequence for anyone who already bought.
+It is also 83% of revenue, so restricting the sale to it costs almost nothing.
+`[evidence_level: documented+code_verified, confidence: exact, evidence_source: StoreKitConfiguration.storekit pro_annual introductoryOffer; https://developer.apple.com/help/app-store-connect/manage-subscriptions/manage-pricing-for-auto-renewable-subscriptions/ and .../set-up-introductory-offers-for-auto-renewable-subscriptions/, fetched 2026-09-09; store_purchases revenue share]`
+
+### Running a sale
+
+1. `zsh -ic 'python3 scripts/verify_sale_prices.py'` and fix any drift it reports.
+2. Schedule the temporary price change on Lifetime Cohort in App Store Connect.
+3. Set `LaunchSale.window` to the same dates and ship a build.
+
+Step 1 is not optional; it is what keeps step 3 honest. The full procedure with exact figures is
+`Docs/Release/5.2/launch-sale.md`.
+
+### Offer codes, for targeted discounts that leave the list price alone
+
+Offer codes now cover consumables, non-consumables and non-renewing subscriptions, not just
+auto-renewable ones, and promo codes for in-app purchases were retired on 2026-03-26. Limits: 10
+active offers per app, up to 1,000,000 codes per app per quarter, one-time-use batches of 500 to
+25,000, custom-code batches up to 25,000 redemptions, a maximum 6-month expiry, and one
+redemption per customer per offer. An offer can be a discounted price rather than free.
+`[evidence_level: documented, confidence: exact, evidence_source: https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/create-offer-codes-for-in-app-purchases/, fetched 2026-09-09]`
+
+Prefer offer codes over a price change for win-back and targeted outreach: they never touch the
+public price and each redemption is attributable.

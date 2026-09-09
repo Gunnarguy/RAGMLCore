@@ -12,6 +12,9 @@ The release that turns on Private Cloud Compute. Nothing about how the app reads
 your files changes; what changes is that one step, the writing of the answer, can now leave the
 device when it needs to, and only after you say so. Requires iOS, iPadOS or macOS 27.
 
+### Plans
+- **When a launch discount is running, the plans screen now shows what the price normally is, how much is off, and the day it ends.** The App Store does not mark a reduced in-app purchase as reduced, so without this the price simply looks lower and there is no way to tell it is temporary. The app only says a discount is on when the price it is being charged is genuinely below the normal one, so it cannot advertise a sale that is not running.
+
 ### Private Cloud Compute
 - **When a question needs more room than the model on your device can hold, the writing step can now go to Apple's Private Cloud Compute.** Reading your files, searching them, choosing what to cite and checking the finished answer against the passages still happen on your device, exactly as before. Every release since 4.6 has carried this support compiled out, waiting on iOS and macOS 27. This is the first build made with the toolchain that compiles it in.
 - **Nothing leaves without asking.** Before anything is sent, a sheet shows what would go: how many passages, how large, and why. Allow it once, allow it always, or keep everything on the device. You can also pin routing to On-Device in Settings and the question never comes up.
@@ -22,6 +25,9 @@ device when it needs to, and only after you say so. Requires iOS, iPadOS or macO
 ### Honesty
 - **How It Works and the About screen said the app asks before sending to Private Cloud Compute, on builds that could not send anything.** The check they read answered a different question, whether the operating system has Apple Intelligence, which is true of every iPhone that can run the app. It now answers the real one: whether this build can route to Private Cloud Compute. On a system older than 27 those screens say so plainly.
 - **The built-in guides, the Glossary and the Settings capability list now describe the build you are running.** Each of them picks its wording on the same condition the code uses, so a build with Private Cloud Compute says it is on and a build without it says it is not.
+
+### Ratings
+- **The app now asks for an App Store rating, once, after your third verified answer.** It never asks on launch, never after an answer it could not verify or declined to give, and never twice within four months; Apple's own sheet decides whether to show at all and caps it at three times a year. If you would rather not be asked, dismiss it once and it stays away.
 
 ## v5.1 - September 2, 2026
 Most of this release is about the Mac, where importing a large document had become slow enough to be

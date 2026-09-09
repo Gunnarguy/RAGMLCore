@@ -12,6 +12,9 @@ The release that turns on Private Cloud Compute. Nothing about how the app reads
 your files changes; what changes is that one step, the writing of the answer, can now leave the
 device when it needs to, and only after you say so. Requires iOS, iPadOS or macOS 27.
 
+### Plans
+- **When a launch discount is running, the plans screen now shows what the price normally is, how much is off, and the day it ends.** The App Store does not mark a reduced in-app purchase as reduced, so without this the price simply looks lower and there is no way to tell it is temporary. The app only says a discount is on when the price it is being charged is genuinely below the normal one, so it cannot advertise a sale that is not running.
+
 ### Private Cloud Compute
 - **When a question needs more room than the model on your device can hold, the writing step can now go to Apple's Private Cloud Compute.** Reading your files, searching them, choosing what to cite and checking the finished answer against the passages still happen on your device, exactly as before. Every release since 4.6 has carried this support compiled out, waiting on iOS and macOS 27. This is the first build made with the toolchain that compiles it in.
 - **Nothing leaves without asking.** Before anything is sent, a sheet shows what would go: how many passages, how large, and why. Allow it once, allow it always, or keep everything on the device. You can also pin routing to On-Device in Settings and the question never comes up.

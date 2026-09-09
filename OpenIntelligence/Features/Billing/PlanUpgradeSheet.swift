@@ -1,7 +1,8 @@
 import StoreKit
 import SwiftUI
+
 #if canImport(UIKit)
-import UIKit
+    import UIKit
 #endif
 
 /// Full-screen paywall surface that highlights plan tiers, add-ons, and billing controls.
@@ -79,13 +80,15 @@ struct PlanUpgradeSheet: View {
         ),
         PlanStorySlide(
             title: "Privacy guarantee",
-            subtitle: "All tiers keep knowledge on-device or Apple PCC—zero third-party AI sharing. Your IP stays yours.",
+            subtitle:
+                "All tiers keep knowledge on-device or Apple PCC—zero third-party AI sharing. Your IP stays yours.",
             icon: "lock.shield.fill",
             tint: .teal
         ),
         PlanStorySlide(
             title: "Lifetime, without renewal",
-            subtitle: "Lifetime keeps Pro-level access unlocked with unlimited documents and up to 20 libraries in a single purchase.",
+            subtitle:
+                "Lifetime keeps Pro-level access unlocked with unlimited documents and up to 20 libraries in a single purchase.",
             icon: "arrow.up.right.circle.fill",
             tint: .purple
         ),
@@ -96,6 +99,7 @@ struct PlanUpgradeSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     heroSection
+                    launchSaleBanner
                     socialProofBanner
                     whyUpgradeNowSection
                     storyCarousel
@@ -127,10 +131,13 @@ struct PlanUpgradeSheet: View {
             }
         }
         .presentationDetents([.large])
-        .alert(alertMessage ?? "", isPresented: Binding(
-            get: { alertMessage != nil },
-            set: { if !$0 { alertMessage = nil } }
-        )) {
+        .alert(
+            alertMessage ?? "",
+            isPresented: Binding(
+                get: { alertMessage != nil },
+                set: { if !$0 { alertMessage = nil } }
+            )
+        ) {
             Button("OK", role: .cancel) { alertMessage = nil }
         } message: {
             if let alertMessage {
@@ -152,13 +159,23 @@ struct PlanUpgradeSheet: View {
                 ]
             )
         }
+        .task {
+            // Re-read prices every time the paywall opens.
+            //
+            // `EntitlementStore` loads its products once at init, and this app can stay running
+            // for weeks on a Mac. Without this, a price change that ended or was cancelled
+            // mid-session would leave a stale cheaper price cached, and the sale banner would
+            // keep advertising a discount the customer would not actually be charged. Refreshing
+            // here keeps what the banner claims and what checkout charges the same number.
+            await entitlementStore.billingService.refreshProducts()
+        }
     }
 }
 
 // MARK: - Sections
 
-private extension PlanUpgradeSheet {
-    var heroSection: some View {
+extension PlanUpgradeSheet {
+    fileprivate var heroSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(entryPoint.headline)
                 .font(.title2.weight(.semibold))
@@ -177,7 +194,7 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    var socialProofBanner: some View {
+    fileprivate var socialProofBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "person.3.fill")
                 .foregroundStyle(.purple)
@@ -193,7 +210,42 @@ private extension PlanUpgradeSheet {
         )
     }
 
-    var whyUpgradeNowSection: some View {
+    /// The launch-sale strip, shown only when Lifetime has a confirmed discount.
+    ///
+    /// Names the plan and its own real percentage rather than a headline figure, so the strip
+    /// cannot promise more than the card below it delivers. Only Lifetime is ever discounted;
+    /// `LaunchSale` explains why the subscriptions are left alone.
+    @ViewBuilder
+    fileprivate var launchSaleBanner: some View {
+        if let offer = saleOffer(for: .lifetimeCohort) {
+            HStack(spacing: 10) {
+                Image(systemName: "tag.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Launch sale: Lifetime is \(offer.percentOff)% off")
+                        .font(.subheadline.weight(.bold))
+                    Text("Ends \(LaunchSale.deadlineText(for: offer.endDate)). One payment, no renewal.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.green.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.35), lineWidth: 1)
+            )
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    fileprivate var whyUpgradeNowSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Why upgrade now?")
                 .font(.headline)
@@ -210,11 +262,12 @@ private extension PlanUpgradeSheet {
         )
     }
 
-    func tierCard(for option: PlanTierOption) -> some View {
+    fileprivate func tierCard(for option: PlanTierOption) -> some View {
         PlanTierCard(
             option: option,
             price: priceLabel(for: option.product),
             priceSuffix: priceSuffix(for: option.product),
+            saleOffer: saleOffer(for: option.product),
             hasAccess: entitlementStore.activeTier.isAtLeast(option.tier),
             // "canPurchase" here means StoreKit metadata has been loaded.
             // We still allow tapping the CTA while loading; the tap will refresh and retry.
@@ -224,9 +277,7 @@ private extension PlanUpgradeSheet {
         )
     }
 
-
-
-    var storyCarousel: some View {
+    fileprivate var storyCarousel: some View {
         TabView(selection: $selectedStoryIndex) {
             ForEach(storySlides.indices, id: \.self) { index in
                 let slide = storySlides[index]
@@ -245,12 +296,12 @@ private extension PlanUpgradeSheet {
         }
         .frame(height: 170)
         #if os(iOS)
-        .tabViewStyle(.page(indexDisplayMode: .always))
+            .tabViewStyle(.page(indexDisplayMode: .always))
         #endif
         .accessibilityLabel("Plan value stories")
     }
 
-    func storySlideView(_ slide: PlanStorySlide) -> some View {
+    fileprivate func storySlideView(_ slide: PlanStorySlide) -> some View {
         HStack(alignment: .top, spacing: 16) {
             ZStack {
                 Circle()
@@ -270,9 +321,7 @@ private extension PlanUpgradeSheet {
         }
     }
 
-
-
-    var multiDocumentTip: some View {
+    fileprivate var multiDocumentTip: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "rectangle.stack.badge.person.crop")
                 .font(.title3)
@@ -293,7 +342,7 @@ private extension PlanUpgradeSheet {
         )
     }
 
-    var managementControls: some View {
+    fileprivate var managementControls: some View {
         VStack(spacing: 12) {
             Button(action: manageSubscriptions) {
                 Label("Manage Subscription", systemImage: "person.crop.circle.badge.checkmark")
@@ -315,15 +364,20 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    var complianceFooter: some View {
+    fileprivate var complianceFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Subscriptions automatically renew at the price and duration selected above unless cancelled at least 24 hours before the end of the current period. Payments are charged to your App Store account. You can manage your subscriptions and turn off auto-renewal in your App Store Account Settings after purchase.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                "Subscriptions automatically renew at the price and duration selected above unless cancelled at least 24 hours before the end of the current period. Payments are charged to your App Store account. You can manage your subscriptions and turn off auto-renewal in your App Store Account Settings after purchase."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 16) {
-                Link("Terms of Use (EULA)", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
-                    .font(.caption.weight(.semibold))
+                Link(
+                    "Terms of Use (EULA)",
+                    destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
+                )
+                .font(.caption.weight(.semibold))
                 Link("Privacy Policy", destination: URL(string: "https://gunzino.me/openintelligence/privacy")!)
                     .font(.caption.weight(.semibold))
             }
@@ -334,12 +388,12 @@ private extension PlanUpgradeSheet {
 
 // MARK: - Actions
 
-private extension PlanUpgradeSheet {
-    func canPurchase(_ product: BillingProduct) -> Bool {
+extension PlanUpgradeSheet {
+    fileprivate func canPurchase(_ product: BillingProduct) -> Bool {
         entitlementStore.product(for: product) != nil
     }
 
-    func priceLabel(for product: BillingProduct) -> String {
+    fileprivate func priceLabel(for product: BillingProduct) -> String {
         if let storeProduct = entitlementStore.product(for: product) {
             return storeProduct.displayPrice
         }
@@ -351,11 +405,22 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    func priceSuffix(for product: BillingProduct) -> String? {
+    /// The discount to advertise for this product, or `nil` to say nothing.
+    ///
+    /// Delegates every judgement to `LaunchSale`, which refuses to return an offer unless
+    /// StoreKit's live price is genuinely below the recorded regular price in the customer's
+    /// own currency. When StoreKit metadata has not loaded there is no live price to compare,
+    /// so no claim is made.
+    fileprivate func saleOffer(for product: BillingProduct) -> LaunchSaleOffer? {
+        guard let storeProduct = entitlementStore.product(for: product) else { return nil }
+        return LaunchSale.offer(for: product, storeProduct: storeProduct)
+    }
+
+    fileprivate func priceSuffix(for product: BillingProduct) -> String? {
         guard product.kind == .subscription else { return nil }
 
         if let storeProduct = entitlementStore.product(for: product),
-           let period = storeProduct.subscription?.subscriptionPeriod
+            let period = storeProduct.subscription?.subscriptionPeriod
         {
             switch period.unit {
             case .month:
@@ -382,7 +447,7 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    func purchase(_ product: BillingProduct) {
+    fileprivate func purchase(_ product: BillingProduct) {
         // Avoid overlapping purchase flows. StoreKit itself has protection, but keeping the UI
         // single-flight prevents confusing state (multiple spinners/alerts).
         guard purchasingProduct == nil else { return }
@@ -401,7 +466,8 @@ private extension PlanUpgradeSheet {
                     "entryPoint": entryPoint.analyticsValue,
                 ]
             )
-            alertMessage = "You already have the maximum number of document packs active. Remove documents or upgrade your workspace to unlock more capacity."
+            alertMessage =
+                "You already have the maximum number of document packs active. Remove documents or upgrade your workspace to unlock more capacity."
             return
         }
 
@@ -411,12 +477,15 @@ private extension PlanUpgradeSheet {
                     // DEBUG fallback: allow local UI validation without StoreKit metadata.
                     entitlementStore.simulateDebugPurchase(product)
                     #if targetEnvironment(simulator)
-                        let hint = "You’re running in the iOS Simulator. Real App Store Connect products won’t load here unless you enable a StoreKit Configuration (.storekit) in the scheme."
+                        let hint =
+                            "You’re running in the iOS Simulator. Real App Store Connect products won’t load here unless you enable a StoreKit Configuration (.storekit) in the scheme."
                     #else
-                        let hint = "If you’re testing on a device, ensure you’re signed into a Sandbox account (Settings → App Store → Sandbox Account) and that your IAPs/subscriptions exist and are available in App Store Connect."
+                        let hint =
+                            "If you’re testing on a device, ensure you’re signed into a Sandbox account (Settings → App Store → Sandbox Account) and that your IAPs/subscriptions exist and are available in App Store Connect."
                     #endif
 
-                    alertMessage = "StoreKit didn’t return product metadata, so this purchase was simulated (DEBUG-only).\n\n\(hint)"
+                    alertMessage =
+                        "StoreKit didn’t return product metadata, so this purchase was simulated (DEBUG-only).\n\n\(hint)"
                     return
                 }
             #endif
@@ -437,7 +506,8 @@ private extension PlanUpgradeSheet {
                 do {
                     _ = try await entitlementStore.billingService.purchase(product)
                 } catch {
-                    let baseMessage = (error as? LocalizedError)?.errorDescription
+                    let baseMessage =
+                        (error as? LocalizedError)?.errorDescription
                         ?? "Purchases aren’t available right now. Please check your internet connection and try again."
 
                     #if targetEnvironment(simulator)
@@ -445,7 +515,8 @@ private extension PlanUpgradeSheet {
                         // Run scheme has a StoreKit Configuration (.storekit) attached.
                         // Provide a direct, actionable hint to avoid the "worked yesterday" confusion.
                         if entitlementStore.product(for: product) == nil {
-                            alertMessage = "\(baseMessage)\n\nYou’re running in the iOS Simulator without a StoreKit Configuration attached.\n\nTo test purchases locally, run the `OpenIntelligence-StoreKitTesting` scheme (or attach `StoreKitConfiguration.storekit` to your Run action)."
+                            alertMessage =
+                                "\(baseMessage)\n\nYou’re running in the iOS Simulator without a StoreKit Configuration attached.\n\nTo test purchases locally, run the `OpenIntelligence-StoreKitTesting` scheme (or attach `StoreKitConfiguration.storekit` to your Run action)."
                         } else {
                             alertMessage = baseMessage
                         }
@@ -485,7 +556,7 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    func restorePurchases() {
+    fileprivate func restorePurchases() {
         guard !isRestoring else { return }
         isRestoring = true
         Task {
@@ -494,29 +565,29 @@ private extension PlanUpgradeSheet {
         }
     }
 
-    func manageSubscriptions() {
+    fileprivate func manageSubscriptions() {
         Task {
             do {
-#if canImport(UIKit) && !targetEnvironment(macCatalyst)
-                let scene = await MainActor.run {
-                    UIApplication.shared.connectedScenes
-                        .compactMap { $0 as? UIWindowScene }
-                        .first { $0.activationState == .foregroundActive }
-                }
+                #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+                    let scene = await MainActor.run {
+                        UIApplication.shared.connectedScenes
+                            .compactMap { $0 as? UIWindowScene }
+                            .first { $0.activationState == .foregroundActive }
+                    }
 
-                guard let windowScene = scene else {
-                    alertMessage = "Unable to locate an active window scene."
-                    return
-                }
+                    guard let windowScene = scene else {
+                        alertMessage = "Unable to locate an active window scene."
+                        return
+                    }
 
-                try await AppStore.showManageSubscriptions(in: windowScene)
-#elseif os(macOS) || targetEnvironment(macCatalyst)
-                if let url = URL(string: "https://apps.apple.com/account/subscriptions") {
-                    openURL(url)
-                }
-#else
-                alertMessage = "Subscription management is unavailable on this platform."
-#endif
+                    try await AppStore.showManageSubscriptions(in: windowScene)
+                #elseif os(macOS) || targetEnvironment(macCatalyst)
+                    if let url = URL(string: "https://apps.apple.com/account/subscriptions") {
+                        openURL(url)
+                    }
+                #else
+                    alertMessage = "Subscription management is unavailable on this platform."
+                #endif
             } catch {
                 alertMessage = error.localizedDescription
             }
@@ -542,6 +613,9 @@ private struct PlanTierCard: View {
     let option: PlanTierOption
     let price: String
     let priceSuffix: String?
+    /// Non-nil only when `LaunchSale` has confirmed the live price is genuinely below the
+    /// regular one in this customer's currency. See `LaunchSale` for why that is guarded.
+    let saleOffer: LaunchSaleOffer?
     let hasAccess: Bool
     let canPurchase: Bool
     let isProcessing: Bool
@@ -571,17 +645,52 @@ private struct PlanTierCard: View {
                 }
             }
 
-            Text(price + (priceSuffix ?? ""))
-                .font(.title.bold())
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
-                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(price + (priceSuffix ?? ""))
+                        .font(.title.bold())
+                        .minimumScaleFactor(0.7)
+                        .lineLimit(1)
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+
+                    if let saleOffer {
+                        Text(saleOffer.regularDisplayPrice)
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                            .strikethrough(true, color: .secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+
+                        Text("\(saleOffer.percentOff)% off")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.green))
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                    }
+                }
+
+                if let saleOffer {
+                    Text("Launch price until \(LaunchSale.deadlineText(for: saleOffer.endDate))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                }
+            }
+            // Deliberately no accessibility modifiers here. The whole card is a single element
+            // (see the bottom of this view), and a label applied inside it would be discarded.
+            // The sale is spoken through `accessibilityValueText` instead.
 
             if option.product.kind == .subscription {
-                Text(option.product == .proMonthly ? "1-Month Auto-Renewing Subscription" : "1-Year Auto-Renewing Subscription")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, -8)
+                Text(
+                    option.product == .proMonthly
+                        ? "1-Month Auto-Renewing Subscription" : "1-Year Auto-Renewing Subscription"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, -8)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -606,14 +715,25 @@ private struct PlanTierCard: View {
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(option.planName) plan")
-        .accessibilityValue("\(price). \(option.tagline)")
+        .accessibilityValue(accessibilityValueText)
         .accessibilityHint(hasAccess ? "Already unlocked" : "Double tap to purchase")
+    }
+
+    /// What VoiceOver reads for the card, including the sale when one is running.
+    ///
+    /// The card is a single accessibility element, so this is the only place the discount can
+    /// be spoken. A label applied to the price row inside would be discarded.
+    private var accessibilityValueText: String {
+        guard let saleOffer else { return "\(price). \(option.tagline)" }
+        return "\(price), reduced from \(saleOffer.regularDisplayPrice), "
+            + "\(saleOffer.percentOff) percent off until "
+            + "\(LaunchSale.deadlineText(for: saleOffer.endDate)). \(option.tagline)"
     }
 }
 
-private extension PlanTierCard {
+extension PlanTierCard {
     @ViewBuilder
-    func ctaLabel(hasAccess: Bool, canPurchase: Bool, isProcessing: Bool) -> some View {
+    fileprivate func ctaLabel(hasAccess: Bool, canPurchase: Bool, isProcessing: Bool) -> some View {
         if hasAccess {
             Label("Unlocked", systemImage: "checkmark")
                 .frame(maxWidth: .infinity)
@@ -630,7 +750,7 @@ private extension PlanTierCard {
     }
 
     @ViewBuilder
-    func ctaButton(hasAccess: Bool, canPurchase: Bool, isProcessing: Bool) -> some View {
+    fileprivate func ctaButton(hasAccess: Bool, canPurchase: Bool, isProcessing: Bool) -> some View {
         if option.isFeatured {
             Button(action: ctaAction) {
                 ctaLabel(hasAccess: hasAccess, canPurchase: canPurchase, isProcessing: isProcessing)
