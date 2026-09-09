@@ -72,10 +72,22 @@ enum LaunchSale {
     ///
     /// These dates must match the temporary price change in App Store Connect. They are UTC
     /// instants; App Store Connect schedules in Pacific time, so leave slack rather than
-    /// matching to the minute, and prefer a window slightly **narrower** than the real price
-    /// change. Narrower means the app stops advertising before the discount ends, which
-    /// under-claims. Wider would mean advertising after it ends, and only condition 2 would
-    /// catch that.
+    /// matching to the minute.
+    ///
+    /// The two ends are not symmetric, because this value is compiled in and the price change is
+    /// not. The window is fixed when the binary is built; the price change can be rescheduled
+    /// afterwards. So:
+    ///
+    ///   - `end` must equal the price change's end date in App Store Connect. It is not itself
+    ///     shown: `deadlineText` names the day before, because the window closes at midnight at
+    ///     the start of `end`. So a customer is told the sale ends on `end` minus one day, which
+    ///     under either reading of Apple's end date is right or one day early, never one day
+    ///     late. A later `end` would promise days that are charged at full price.
+    ///   - `start` may sit **earlier** than the price change with no harm. Condition 2 keeps the
+    ///     banner silent until the price actually drops, so an early start simply absorbs a
+    ///     review that takes longer than expected.
+    ///
+    /// `scripts/schedule_sale.py --write-window` writes both from the same pair of dates.
     ///
     /// Set for the iOS and macOS 27 launch alongside 5.2. Change both dates when the real
     /// dates are known. See `Docs/Release/5.2/launch-sale.md`.

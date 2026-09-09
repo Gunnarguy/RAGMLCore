@@ -137,13 +137,52 @@ Lifetime is a non-consumable, so it reverts with no consequence for anyone who a
 It is also 83% of revenue, so restricting the sale to it costs almost nothing.
 `[evidence_level: documented+code_verified, confidence: exact, evidence_source: StoreKitConfiguration.storekit pro_annual introductoryOffer; https://developer.apple.com/help/app-store-connect/manage-subscriptions/manage-pricing-for-auto-renewable-subscriptions/ and .../set-up-introductory-offers-for-auto-renewable-subscriptions/, fetched 2026-09-09; store_purchases revenue share]`
 
+### One US price change is a different discount in every storefront
+
+Apple rounds each territory to its own price ladder, so a single USA change from $59.99 to $39.99
+does not land at 33% anywhere but the USA and the UK. Read from Apple's equalizations for the
+$39.99 USA price point rather than converted:
+
+| Territory | Regular | Sale | Off |
+|---|---|---|---|
+| Mexico | MX$1299 | MX$899 | 30% |
+| India | ₹5900 | ₹3999 | 32% |
+| USA, United Kingdom | 59.99 | 39.99 | 33% |
+| Germany | €69.99 | €44.99 | 35% |
+| Canada | CA$79.99 | CA$49.99 | 37% |
+| Brazil | R$399.90 | R$249.90 | 37% |
+| Australia, Japan | A$99.99, ¥10000 | A$59.99, ¥6000 | 40% |
+
+This is why `LaunchSale.percentOff` computes per storefront from the customer's own two prices
+instead of showing a single advertised figure, and why marketing copy that has to be true
+everywhere says "a third off" rather than a percentage. 30% is the floor across these nine.
+`[evidence_level: measured, confidence: exact, evidence_source: /v1/inAppPurchasePricePoints/<USA 39.99>/equalizations, 174 rows, read 2026-09-09]`
+
+### Writing the price change: the schedule is replaced, not amended
+
+There is no "add a price change" call. `POST /v1/inAppPurchasePriceSchedules` submits the
+**entire** schedule, and at least one row must carry `startDate: null`, which is the standing
+price. A temporary sale is therefore two rows in one request, the regular price with no dates
+and the sale price with both. Sending only the sale row does not leave the regular price alone.
+`[evidence_level: inferred, confidence: high, evidence_source: https://github.com/dfabulich/node-app-store-connect-api README and https://developer.apple.com/forums/thread/732527, both fetched 2026-09-09. Apple's own reference documents the field names but not this behaviour, and omission has not been tested against a live schedule.]`
+
+Apple does not document whether its end date is the last day at the sale price or the day the
+price reverts. `LaunchSale.window` closes at midnight at the start of that date and
+`deadlineText` names the day before, so the app tells customers a deadline that is either exact
+or one day early under both readings, never one day late.
+`[evidence_level: documented, confidence: high, evidence_source: https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/schedule-price-changes-for-in-app-purchases/, fetched 2026-09-09, which specifies the maximum length and how far ahead you may schedule but not the end-date boundary]`
+
 ### Running a sale
 
 1. `zsh -ic 'python3 scripts/verify_sale_prices.py'` and fix any drift it reports.
-2. Schedule the temporary price change on Lifetime Cohort in App Store Connect.
-3. Set `LaunchSale.window` to the same dates and ship a build.
+2. Set `LaunchSale.window` **before the build**, since it compiles into the binary:
+   `scripts/schedule_sale.py --start ... --end ... --write-window`.
+3. On release day, the same script with `--confirm` writes the temporary price change.
 
-Step 1 is not optional; it is what keeps step 3 honest. The full procedure with exact figures is
+Step 1 is not optional; it is what keeps the struck-through price honest. `schedule_sale.py`
+reads the live schedule first and refuses to write if the standing price is not what this repo
+expects, or if a hand-set price exists outside the USA, because either would mean the submission
+silently changes or deletes a real price. The full procedure with exact figures is
 `Docs/Release/5.2/launch-sale.md`.
 
 ### Offer codes, for targeted discounts that leave the list price alone

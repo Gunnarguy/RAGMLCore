@@ -878,6 +878,21 @@ it. 5.2 is the first build on Xcode 27 / Swift 6.4, and its only job is to turn 
    ruby scripts/xcode_cloud_toolchain.rb --set 'Xcode 27'
    ```
 
+2b. **If you want the launch sale, set its window now, before the build.**
+   `LaunchSale.window` is compiled into the binary, so it cannot be changed at step 5b without
+   rebuilding. Pick the dates first:
+
+   ```bash
+   zsh -ic 'python3 scripts/schedule_sale.py --start YYYY-MM-DD --end YYYY-MM-DD --write-window'
+   ```
+
+   Without `--confirm` no pricing is written; it sets the Swift dates only. It still reads from
+   App Store Connect to resolve price points, so it needs credentials, hence `zsh -ic`.
+   Commit that, then build. The end date is the one that must be exact, because the paywall prints
+   it as a deadline. The start may sit a few days early with no harm: the banner also requires the
+   live price to be below the regular price, so it stays silent until the price change actually
+   begins. That is the slack that absorbs a slow review.
+
 3. **Build.** Push any commit to `main`, or start the `Default` workflow from App Store Connect.
    `ci_post_clone.sh` confirms Swift 6.4, `ci_post_xcodebuild.sh` Gate 1 confirms the archive
    carries `PrivateCloudCompute` symbols. Both fail loudly otherwise; a green run is the proof.
@@ -902,10 +917,25 @@ it. 5.2 is the first build on Xcode 27 / Swift 6.4, and its only job is to turn 
    ```
 
 5b. **Optional: the launch sale.** Lifetime only, `$59.99` to `$39.99`, scheduled as a temporary
-   price change that reverts itself. Run `zsh -ic 'python3 scripts/verify_sale_prices.py'` first;
-   it fails if the price table compiled into the app has drifted from App Store Connect, which
-   would make the paywall misstate a saving. Full procedure and the reasoning, including why the
-   subscriptions are deliberately excluded, in `Docs/Release/5.2/launch-sale.md`.
+   price change that reverts itself. First check the price table compiled into the app still
+   matches App Store Connect, because a stale entry makes the paywall misstate a saving:
+
+   ```bash
+   zsh -ic 'python3 scripts/verify_sale_prices.py'
+   ```
+
+   Then schedule it. Without `--confirm` this only prints what it would do:
+
+   ```bash
+   zsh -ic 'python3 scripts/schedule_sale.py --start YYYY-MM-DD --end YYYY-MM-DD --confirm --write-window'
+   ```
+
+   That writes the price schedule **and** sets `LaunchSale.window` to the same dates, which is
+   the pair that must agree. It snapshots the old schedule to `.sale-snapshots/` first and prints
+   the `--restore` command that undoes it. Note the POST replaces the whole schedule, so the
+   regular price is resubmitted alongside the sale price; omitting it would delete it. Full
+   procedure and the reasoning, including why the subscriptions are deliberately excluded, in
+   `Docs/Release/5.2/launch-sale.md`.
 
 6. **After approval, and only then, flip the claim.** `Docs/SHIPPED_CAPABILITIES.json`
    `private_cloud_compute.status` to `shipping`; `Docs/SHIPPED_VERSION.json`; README's toolchain and
