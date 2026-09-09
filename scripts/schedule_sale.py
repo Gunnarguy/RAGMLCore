@@ -281,8 +281,24 @@ def write_snapshot(c, label: str) -> Path:
     return path
 
 
+def local_id(name: str) -> str:
+    """Apple's format for an id that exists only inside this request.
+
+    A plain string is rejected: "The provided included entity id 'regular' has invalid format.
+    For inline creation, the id must be a local id with the format '${local-id}'."
+    The literal braces are required, and the same string must appear in both the relationship
+    and the `included` entry or Apple cannot match them.
+    [evidence_level: measured, confidence: exact, evidence_source: HTTP 409
+    ENTITY_ERROR.INCLUDED.INVALID_ID from POST /v1/inAppPurchasePriceSchedules, 2026-09-09]
+    """
+    return "${" + name + "}"
+
+
 def body_for(rows: list[dict]) -> dict:
-    """The create request. `rows` are {id, pricePointId, startDate, endDate}."""
+    """The create request. `rows` are {id, pricePointId, startDate, endDate}.
+
+    `id` is a bare name here; `local_id` wraps it into the form Apple requires.
+    """
     return {
         "data": {
             "type": "inAppPurchasePriceSchedules",
@@ -290,14 +306,14 @@ def body_for(rows: list[dict]) -> dict:
                 "inAppPurchase": {"data": {"type": "inAppPurchases", "id": LIFETIME_IAP}},
                 "baseTerritory": {"data": {"type": "territories", "id": BASE_TERRITORY}},
                 "manualPrices": {
-                    "data": [{"type": "inAppPurchasePrices", "id": r["id"]} for r in rows]
+                    "data": [{"type": "inAppPurchasePrices", "id": local_id(r["id"])} for r in rows]
                 },
             },
         },
         "included": [
             {
                 "type": "inAppPurchasePrices",
-                "id": r["id"],
+                "id": local_id(r["id"]),
                 "attributes": {"startDate": r["startDate"], "endDate": r["endDate"]},
                 "relationships": {
                     "inAppPurchasePricePoint": {

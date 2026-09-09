@@ -136,6 +136,36 @@ class RequestBody(unittest.TestCase):
         self.assertEqual(declared, {i["id"] for i in body["included"]})
 
 
+class LocalIds(unittest.TestCase):
+    """Apple rejects a bare string with HTTP 409 ENTITY_ERROR.INCLUDED.INVALID_ID.
+
+    Cost a real failed POST on 2026-09-09. The forum example this was built from wrote the ids
+    as `$random_id`, which was shell placeholder syntax in their prose rather than the literal
+    format Apple wants.
+    """
+
+    def test_ids_carry_the_dollar_brace_form(self):
+        self.assertEqual(ss.local_id("regular"), "${regular}")
+
+    def test_request_uses_local_ids_in_both_places(self):
+        body = ss.body_for([
+            {"id": "regular", "pricePointId": "a", "startDate": None, "endDate": None},
+            {"id": "sale", "pricePointId": "b", "startDate": "2026-09-15", "endDate": "2026-09-30"},
+        ])
+        declared = [r["id"] for r in body["data"]["relationships"]["manualPrices"]["data"]]
+        included = [i["id"] for i in body["included"]]
+        self.assertEqual(declared, ["${regular}", "${sale}"])
+        self.assertEqual(included, ["${regular}", "${sale}"])
+        # Apple matches the two lists by this string, so they must agree exactly.
+        self.assertEqual(declared, included)
+
+    def test_restore_ids_are_local_too(self):
+        body = ss.body_for([
+            {"id": "restore0", "pricePointId": "a", "startDate": None, "endDate": None},
+        ])
+        self.assertEqual(body["included"][0]["id"], "${restore0}")
+
+
 class Constants(unittest.TestCase):
     def test_window_cap_keeps_the_swift_suite_green(self):
         # LaunchSaleTests asserts the compiled window is under 90 days.
