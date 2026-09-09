@@ -80,9 +80,14 @@ enum LaunchSale {
     ///
     ///   - `end` must equal the price change's end date in App Store Connect. It is not itself
     ///     shown: `deadlineText` names the day before, because the window closes at midnight at
-    ///     the start of `end`. So a customer is told the sale ends on `end` minus one day, which
-    ///     under either reading of Apple's end date is right or one day early, never one day
-    ///     late. A later `end` would promise days that are charged at full price.
+    ///     the start of `end`. That is exact rather than approximate. App Store Connect's
+    ///     intervals are half-open, `[start, end)`, so the end date is the day the price
+    ///     **reverts** and the last day at the sale price is the day before it. A later `end`
+    ///     would promise days that are charged at full price.
+    ///     [evidence_level: measured, confidence: high, evidence_source: POST
+    ///     /v1/inAppPurchasePriceSchedules rejects overlapping intervals and requires the
+    ///     timeline be covered, which only holds for adjacent intervals sharing a boundary date
+    ///     if the boundary belongs to the later one, 2026-09-09]
     ///   - `start` may sit **earlier** than the price change with no harm. Condition 2 keeps the
     ///     banner silent until the price actually drops, so an early start simply absorbs a
     ///     review that takes longer than expected.

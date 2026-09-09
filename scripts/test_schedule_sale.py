@@ -81,12 +81,17 @@ def row(price, territory="USA", start=None, end=None, pp="x"):
 
 
 class LiveScheduleGuard(unittest.TestCase):
-    """Every one of these would, unguarded, change the real price customers pay."""
+    """Every one of these would, unguarded, change the real price customers pay.
 
-    def test_accepts_the_shape_the_script_knows_how_to_replace(self):
+    The schedule is a partition of the timeline, so the row that matters for "what is the
+    regular price" is the open-ended one, the interval with no end date. That is what customers
+    pay once every scheduled change has expired.
+    """
+
+    def test_accepts_a_plain_schedule_with_one_open_ended_interval(self):
         ss.check_live_schedule([row(59.99)], 59.99)   # must not raise
 
-    def test_refuses_when_the_standing_price_is_not_what_the_constant_says(self):
+    def test_refuses_when_the_price_it_reverts_to_is_not_what_the_constant_says(self):
         # The scenario: Lifetime was raised to 69.99 and REGULAR_PRICE was never updated.
         # Writing would silently drop the real price by ten dollars, permanently.
         with self.assertRaises(SystemExit):
@@ -97,43 +102,85 @@ class LiveScheduleGuard(unittest.TestCase):
         with self.assertRaises(SystemExit):
             ss.check_live_schedule([row(59.99), row(54.99, territory="CAN")], 59.99)
 
-    def test_refuses_when_there_is_no_standing_price(self):
+    def test_refuses_when_no_interval_runs_forever(self):
+        # Apple requires the rightmost interval to be open-ended, so a schedule without one
+        # means we are reading something we do not understand.
         with self.assertRaises(SystemExit):
-            ss.check_live_schedule([row(39.99, start="2026-09-14", end="2026-09-28")], 59.99)
+            ss.check_live_schedule([row(39.99, start="2026-09-15", end="2026-09-30")], 59.99)
 
-    def test_refuses_when_there_are_two_standing_prices(self):
+    def test_refuses_when_two_intervals_run_forever(self):
         with self.assertRaises(SystemExit):
             ss.check_live_schedule([row(59.99), row(49.99)], 59.99)
 
-    def test_refuses_when_the_standing_price_cannot_be_resolved(self):
+    def test_refuses_when_the_open_ended_interval_cannot_be_resolved(self):
         with self.assertRaises(SystemExit):
             ss.check_live_schedule([row(None)], 59.99)
 
     def test_allows_replacing_a_sale_that_is_already_scheduled(self):
-        # Re-running to change the dates is legitimate; the dated row is replaced, not added to.
-        ss.check_live_schedule(
-            [row(59.99), row(39.99, start="2026-09-14", end="2026-09-28")], 59.99)
+        # Re-running to change the dates is legitimate. This is the three-interval shape the
+        # script itself writes, read back.
+        ss.check_live_schedule([
+            row(59.99, end="2026-09-15"),
+            row(39.99, start="2026-09-15", end="2026-09-30"),
+            row(59.99, start="2026-09-30"),
+        ], 59.99)
+
+    def test_refuses_when_a_scheduled_sale_would_revert_to_the_wrong_price(self):
+        # The dangerous variant of the above: the tail interval is not the regular price, so
+        # re-sending 59.99 there would be a change rather than a preservation.
+        with self.assertRaises(SystemExit):
+            ss.check_live_schedule([
+                row(59.99, end="2026-09-15"),
+                row(39.99, start="2026-09-15", end="2026-09-30"),
+                row(49.99, start="2026-09-30"),
+            ], 59.99)
 
 
 class RequestBody(unittest.TestCase):
-    def test_always_carries_a_standing_price(self):
-        body = ss.body_for([
-            {"id": "regular", "pricePointId": "a", "startDate": None, "endDate": None},
-            {"id": "sale", "pricePointId": "b",
-             "startDate": "2026-09-14", "endDate": "2026-09-28"},
-        ])
-        starts = [i["attributes"]["startDate"] for i in body["included"]]
-        self.assertIn(None, starts, "Apple requires one price with a null startDate")
-        self.assertEqual(len(body["data"]["relationships"]["manualPrices"]["data"]), 2)
-        self.assertEqual(body["data"]["type"], "inAppPurchasePriceSchedules")
+    """Apple rejects anything that is not a clean partition of the timeline.
+
+    Measured 2026-09-09: a two-row body of [null -> null] plus [start -> end] drew both
+    ENTITY_ERROR.INVALID_INTERVAL ("Adjacent intervals must not intersect") and
+    ENTITY_ERROR.INVALID_END_DATE ("Rightmost interval must not have an end date").
+    """
+
+    SALE = [
+        {"id": "before", "pricePointId": "REG", "startDate": None, "endDate": "2026-09-15"},
+        {"id": "sale", "pricePointId": "SALE",
+         "startDate": "2026-09-15", "endDate": "2026-09-30"},
+        {"id": "after", "pricePointId": "REG", "startDate": "2026-09-30", "endDate": None},
+    ]
+
+    def intervals(self):
+        body = ss.body_for(self.SALE)
+        return [(i["attributes"]["startDate"], i["attributes"]["endDate"])
+                for i in body["included"]]
+
+    def test_covers_the_timeline_with_no_gap(self):
+        iv = self.intervals()
+        self.assertIsNone(iv[0][0], "the first interval must be open at the start of time")
+        for (_, prev_end), (next_start, _) in zip(iv, iv[1:]):
+            self.assertEqual(prev_end, next_start, "a gap between intervals is rejected")
+
+    def test_the_last_interval_never_ends(self):
+        self.assertIsNone(self.intervals()[-1][1])
+
+    def test_no_interval_overlaps_another(self):
+        iv = self.intervals()
+        for (_, prev_end), (next_start, _) in zip(iv, iv[1:]):
+            self.assertLessEqual(prev_end, next_start)
+
+    def test_the_regular_price_holds_both_ends(self):
+        body = ss.body_for(self.SALE)
+        pp = [i["relationships"]["inAppPurchasePricePoint"]["data"]["id"] for i in body["included"]]
+        self.assertEqual(pp[0], pp[-1], "before and after the sale must be the same price")
+        self.assertNotEqual(pp[0], pp[1], "the middle interval is the sale price")
 
     def test_every_declared_row_is_included(self):
-        body = ss.body_for([
-            {"id": "regular", "pricePointId": "a", "startDate": None, "endDate": None},
-            {"id": "sale", "pricePointId": "b", "startDate": "2026-09-14", "endDate": "2026-09-28"},
-        ])
+        body = ss.body_for(self.SALE)
         declared = {r["id"] for r in body["data"]["relationships"]["manualPrices"]["data"]}
         self.assertEqual(declared, {i["id"] for i in body["included"]})
+        self.assertEqual(body["data"]["type"], "inAppPurchasePriceSchedules")
 
 
 class LocalIds(unittest.TestCase):

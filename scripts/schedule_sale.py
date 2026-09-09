@@ -27,20 +27,28 @@ a source file only reaches customers when it is built and shipped.
 WHAT THE API REQUIRES, AND WHY THIS IS NOT A ONE-LINE POST
 
 A price schedule is replaced wholesale. There is no "add a price change" call: POSTing to
-/v1/inAppPurchasePriceSchedules submits the **entire** schedule, and at least one price in it
-must carry `startDate: null`, which is the standing price. So a temporary sale is two rows:
+/v1/inAppPurchasePriceSchedules submits the **entire** schedule. And the schedule is not a list
+of prices, it is a **partition of the timeline**. Apple enforces three things:
 
-    row 1   the regular price, startDate null, endDate null   <- must be included
-    row 2   the sale price, startDate and endDate set         <- reverts to row 1 on expiry
+    1. Intervals must not intersect.
+    2. The entire timeline must be covered, with no gaps.
+    3. The rightmost interval must have no end date.
 
-[evidence_level: inferred, confidence: high, evidence_source:
-https://github.com/dfabulich/node-app-store-connect-api README, "you must set the entire price
-schedule at once; you can't append an upcoming price change to start after the current price. And,
-therefore, at least one of the prices that you set must have startDate: null", fetched 2026-09-09;
-request shape from https://developer.apple.com/forums/thread/732527, same date. Apple's own
-reference documents the field names but not this behaviour, and I have not tested omission against
-a live schedule, so the consequence of leaving row 1 out is inferred rather than measured. The
-design does not depend on which way it resolves: row 1 is always sent.]
+So a temporary sale is **three** rows, not two. The regular price appears twice, because it has
+to hold the time before the sale and the time after it:
+
+    [null       -> start]   regular   the leftmost interval, open at the start of time
+    [start      -> end]     sale
+    [end        -> null]    regular   the rightmost interval, open forever
+
+A two-row schedule of [null -> null] regular plus [start -> end] sale is rejected twice over:
+the first interval intersects the second, and the rightmost interval carries an end date.
+
+[evidence_level: measured, confidence: exact, evidence_source: two HTTP 409 responses from POST
+/v1/inAppPurchasePriceSchedules on 2026-09-09. ENTITY_ERROR.INVALID_INTERVAL: "Adjacent intervals
+must not intersect for USA: [null - null] and [2026-09-15T00:00 - 2026-09-30T00:00]".
+ENTITY_ERROR.INVALID_END_DATE: "Entire timeline must be covered for USA. Rightmost interval must
+not have an end date". Apple's own reference documents the field names but none of this.]
 
 Because the schedule is replaced rather than amended, this reads the live schedule first and
 refuses to write if what it finds is not what it expects, snapshots it before every write, and
@@ -199,30 +207,34 @@ def check_live_schedule(live: list[dict], expected_regular: float):
             f"Submitting would delete them. Set this sale in the App Store Connect UI instead."
         )
 
-    standing = [r for r in live if r["startDate"] is None]
-    if len(standing) != 1:
+    # The schedule is a partition of the timeline. The interval that runs forever, the one with
+    # no end date, is the price customers pay once every scheduled change has expired. That is
+    # the "regular" price, and it is what this script re-sends. If it is not what the constant
+    # says, submitting would change the real price rather than preserve it.
+    rightmost = [r for r in live if r["endDate"] is None]
+    if len(rightmost) != 1:
         problems.append(
-            f"expected exactly one standing price (startDate null), found {len(standing)}. "
+            f"expected exactly one open-ended interval (endDate null), found {len(rightmost)}. "
             f"Rows: {live}"
         )
     else:
-        actual = standing[0]["customerPrice"]
+        actual = rightmost[0]["customerPrice"]
         if actual is None:
-            problems.append("the standing price row has no resolvable price point")
+            problems.append("the open-ended interval has no resolvable price point")
         elif abs(actual - expected_regular) >= 0.005:
             problems.append(
-                f"App Store Connect's standing price is {actual}, but this script is built around "
-                f"{expected_regular}. Submitting would change the regular price to "
-                f"{expected_regular} permanently. Update REGULAR_PRICE in this file and "
+                f"App Store Connect reverts to {actual} once scheduled changes expire, but this "
+                f"script is built around {expected_regular}. Submitting would change the regular "
+                f"price to {expected_regular} permanently. Update REGULAR_PRICE in this file and "
                 f"LaunchSale.regularLifetimePrices, then re-run."
             )
 
-    dated = [r for r in live if r["startDate"] is not None]
-    if dated:
-        print("  note: the schedule already carries a dated price change:")
-        for r in dated:
+    scheduled = [r for r in live if r["endDate"] is not None]
+    if scheduled:
+        print("  note: the schedule already carries dated intervals:")
+        for r in scheduled:
             print(f"    {r['customerPrice']}  {r['startDate']} .. {r['endDate']}")
-        print("  it will be replaced by this run, not added to.")
+        print("  they will be replaced by this run, not added to.")
 
     if problems:
         print("\nREFUSING TO WRITE:\n")
@@ -416,24 +428,43 @@ def verify_after_write(c, expected_regular: float, expected_sale: float,
               f"start={r['startDate']}  end={r['endDate']}")
 
     problems = []
-    standing = [r for r in live if r["startDate"] is None]
-    if len(standing) != 1:
-        problems.append(f"expected one standing price, found {len(standing)}")
-    elif standing[0]["customerPrice"] is None or \
-            abs(standing[0]["customerPrice"] - expected_regular) >= 0.005:
+
+    def price_ok(row, expected):
+        return row["customerPrice"] is not None and \
+            abs(row["customerPrice"] - expected) < 0.005
+
+    # The interval that runs forever is what customers pay after the sale. If this is wrong the
+    # regular price has been changed permanently, which is the failure worth shouting about.
+    rightmost = [r for r in live if r["endDate"] is None]
+    if len(rightmost) != 1:
+        problems.append(f"expected one open-ended interval, found {len(rightmost)}")
+    elif not price_ok(rightmost[0], expected_regular):
         problems.append(
-            f"the standing price reads {standing[0]['customerPrice']}, expected {expected_regular}"
+            f"the price after the sale reads {rightmost[0]['customerPrice']}, "
+            f"expected {expected_regular}. THE REGULAR PRICE MAY HAVE CHANGED."
         )
-    dated = [r for r in live if r["startDate"] == start.isoformat()]
-    if not dated:
-        problems.append(f"no price row starting {start.isoformat()}")
-    elif dated[0]["customerPrice"] is None or \
-            abs(dated[0]["customerPrice"] - expected_sale) >= 0.005:
+
+    # The interval before the sale must also be the regular price.
+    leftmost = [r for r in live if r["startDate"] is None]
+    if len(leftmost) != 1:
+        problems.append(f"expected one interval open at the start, found {len(leftmost)}")
+    elif not price_ok(leftmost[0], expected_regular):
         problems.append(
-            f"the sale row reads {dated[0]['customerPrice']}, expected {expected_sale}"
+            f"the price before the sale reads {leftmost[0]['customerPrice']}, "
+            f"expected {expected_regular}"
         )
-    elif dated[0]["endDate"] != end.isoformat():
-        problems.append(f"the sale row ends {dated[0]['endDate']}, expected {end.isoformat()}")
+
+    sale_rows = [r for r in live if r["startDate"] == start.isoformat()]
+    if not sale_rows:
+        problems.append(f"no interval starting {start.isoformat()}")
+    elif not price_ok(sale_rows[0], expected_sale):
+        problems.append(
+            f"the sale interval reads {sale_rows[0]['customerPrice']}, expected {expected_sale}"
+        )
+    elif sale_rows[0]["endDate"] != end.isoformat():
+        problems.append(
+            f"the sale interval ends {sale_rows[0]['endDate']}, expected {end.isoformat()}"
+        )
 
     if problems:
         print("\nWRITE DID NOT PRODUCE THE EXPECTED SCHEDULE:\n")
@@ -579,14 +610,19 @@ def main() -> int:
     print("What customers would see:")
     preview(c, regular[0], sale[0], REGULAR_PRICE, sale_price)
 
-    print("\nSchedule to submit:")
-    print(f"  {REGULAR_PRICE:>8}   standing price, no dates")
-    print(f"  {sale_price:>8}   {start} to {end}\n")
+    print("\nSchedule to submit, as three contiguous intervals:")
+    print(f"  {REGULAR_PRICE:>8}   from the beginning until {start}")
+    print(f"  {sale_price:>8}   {start} until {end}")
+    print(f"  {REGULAR_PRICE:>8}   from {end} onward, no end date\n")
 
+    # A partition of the timeline: no gaps, no overlaps, last interval open-ended.
     rows = [
-        {"id": "regular", "pricePointId": regular[0], "startDate": None, "endDate": None},
+        {"id": "before", "pricePointId": regular[0],
+         "startDate": None, "endDate": start.isoformat()},
         {"id": "sale", "pricePointId": sale[0],
          "startDate": start.isoformat(), "endDate": end.isoformat()},
+        {"id": "after", "pricePointId": regular[0],
+         "startDate": end.isoformat(), "endDate": None},
     ]
     request = body_for(rows)
     status = 0

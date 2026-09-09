@@ -103,17 +103,19 @@ zsh -ic 'python3 scripts/schedule_sale.py --restore .sale-snapshots/<file>.json 
 
 ### Why the script and not the API by hand
 
-A price schedule is replaced wholesale. There is no "add a price change" call. The POST submits
-the entire schedule and at least one price in it must carry `startDate: null`, which is the
-standing price. So the request has to contain **two** rows:
+A price schedule is replaced wholesale, and it is not a list of prices. It is a **partition of
+the timeline**: intervals must not intersect, the timeline must be covered with no gaps, and the
+rightmost interval must have no end date. So the request contains **three** rows, with the
+regular price appearing twice:
 
 | Price | startDate | endDate | Role |
 |---|---|---|---|
-| $59.99 | null | null | the standing price, and what it reverts to |
+| $59.99 | null | sale start | before the sale |
 | $39.99 | sale start | sale end | the sale |
+| $59.99 | sale end | null | what it reverts to, forever |
 
-Leave the first row out and the regular price is not preserved, it is removed. That is the whole
-reason this is a script with a snapshot rather than a curl one-liner.
+Get that wrong and Apple rejects the whole request, which is how these rules were learned. That
+is the reason this is a script with a snapshot rather than a curl one-liner.
 
 ### The discount is not 33% everywhere
 

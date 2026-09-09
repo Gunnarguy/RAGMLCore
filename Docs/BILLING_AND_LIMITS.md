@@ -161,16 +161,33 @@ everywhere says "a third off" rather than a percentage. 30% is the floor across 
 ### Writing the price change: the schedule is replaced, not amended
 
 There is no "add a price change" call. `POST /v1/inAppPurchasePriceSchedules` submits the
-**entire** schedule, and at least one row must carry `startDate: null`, which is the standing
-price. A temporary sale is therefore two rows in one request, the regular price with no dates
-and the sale price with both. Sending only the sale row does not leave the regular price alone.
-`[evidence_level: inferred, confidence: high, evidence_source: https://github.com/dfabulich/node-app-store-connect-api README and https://developer.apple.com/forums/thread/732527, both fetched 2026-09-09. Apple's own reference documents the field names but not this behaviour, and omission has not been tested against a live schedule.]`
+**entire** schedule, and the schedule is not a list of prices, it is a **partition of the
+timeline**. Apple enforces that intervals do not intersect, that the timeline is covered with no
+gaps, and that the rightmost interval has no end date.
 
-Apple does not document whether its end date is the last day at the sale price or the day the
-price reverts. `LaunchSale.window` closes at midnight at the start of that date and
-`deadlineText` names the day before, so the app tells customers a deadline that is either exact
-or one day early under both readings, never one day late.
-`[evidence_level: documented, confidence: high, evidence_source: https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/schedule-price-changes-for-in-app-purchases/, fetched 2026-09-09, which specifies the maximum length and how far ahead you may schedule but not the end-date boundary]`
+A temporary sale is therefore **three** intervals, because the regular price has to hold both
+the time before the sale and the time after it:
+
+| Interval | Price | Role |
+|---|---|---|
+| `null` to start | 59.99 | open at the start of time |
+| start to end | 39.99 | the sale |
+| end to `null` | 59.99 | what it reverts to, open forever |
+
+`[evidence_level: measured, confidence: exact, evidence_source: two HTTP 409 responses from POST /v1/inAppPurchasePriceSchedules, 2026-09-09. ENTITY_ERROR.INVALID_INTERVAL: "Adjacent intervals must not intersect for USA: [null - null] and [2026-09-15T00:00 - 2026-09-30T00:00]". ENTITY_ERROR.INVALID_END_DATE: "Entire timeline must be covered for USA. Rightmost interval must not have an end date". Apple's reference documents the field names but none of this.]`
+
+The consequence for the guard in `schedule_sale.py`: the price that answers "what is the regular
+price" is the **open-ended** interval, not the one with a null start. A sale is already
+scheduled means the null-start interval is still the regular price but so is the tail, and it is
+the tail that customers pay once the sale expires.
+
+Two further things the error messages settle, which Apple's help pages do not. Inline entity ids
+must be written `${local-id}` with literal braces, not as bare strings. And the intervals are
+half-open: `[start, end)`, since adjacent intervals share a boundary date without intersecting.
+So the end date is the day the price **reverts**, and the last day at the sale price is the day
+before. `LaunchSale.deadlineText` names that day, which makes the advertised deadline exact
+rather than approximate.
+`[evidence_level: measured, confidence: high, evidence_source: same two 409 responses; the half-open reading is what makes "must not intersect" and "must be covered" simultaneously satisfiable for adjacent intervals sharing a date, and is confirmed by Apple accepting that shape]`
 
 ### Running a sale
 
