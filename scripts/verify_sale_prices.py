@@ -70,13 +70,25 @@ def decode_territory(price_point_id):
         return None
 
 
-def live_prices(client):
-    """currency -> set of prices Apple currently charges, across all territories."""
+def regular_prices(client):
+    """currency -> set of *regular* prices, ignoring any sale interval.
+
+    A price schedule is a partition of the timeline, so a territory with a sale scheduled has
+    three rows, not one. The regular price is the one in force once every scheduled change has
+    expired: the interval with no end date. Comparing against all rows indiscriminately reports
+    a live sale as drift, which is exactly when this check needs to be trustworthy.
+    [evidence_level: measured, confidence: exact, evidence_source: the schedule written on
+    2026-09-09 produced [null -> 09-15] 59.99, [09-15 -> 09-30] 39.99, [09-30 -> null] 59.99 in
+    USA and the equivalent in all 174 generated territories]
+    """
     by_currency = defaultdict(set)
+    # territory -> the open-ended row's price
+    tail = {}
     url = f"/v1/inAppPurchasePriceSchedules/{LIFETIME_IAP}/automaticPrices"
     params = {
         "include": "inAppPurchasePricePoint",
         "limit": 200,
+        "fields[inAppPurchasePrices]": "startDate,endDate,inAppPurchasePricePoint",
         "fields[inAppPurchasePricePoints]": "customerPrice,proceeds,territory",
     }
     page = 0
@@ -91,10 +103,11 @@ def live_prices(client):
             rel = (row.get("relationships", {}).get("inAppPurchasePricePoint") or {}).get("data")
             if not rel or rel["id"] not in points:
                 continue
+            if row["attributes"].get("endDate") is not None:
+                continue        # a scheduled change, not the regular price
             territory = decode_territory(rel["id"])
-            currency = TERRITORY_CURRENCY.get(territory) if territory else None
-            if currency:
-                by_currency[currency].add(float(points[rel["id"]]["customerPrice"]))
+            if territory:
+                tail[territory] = float(points[rel["id"]]["customerPrice"])
         nxt = (payload.get("links") or {}).get("next")
         if not nxt:
             break
@@ -102,20 +115,62 @@ def live_prices(client):
         params = None
         page += 1
 
-    # USA is set by hand, so it is a manual price rather than a generated one.
+    for territory, price in tail.items():
+        currency = TERRITORY_CURRENCY.get(territory)
+        if currency:
+            by_currency[currency].add(price)
+
+    # USA is set by hand, so it is a manual price rather than a generated one. Same rule: the
+    # open-ended interval is the regular price.
     manual = client.get_json(
         f"/v1/inAppPurchasePriceSchedules/{LIFETIME_IAP}/manualPrices",
         {
             "include": "inAppPurchasePricePoint",
             "limit": 200,
             "filter[territory]": "USA",
+            "fields[inAppPurchasePrices]": "startDate,endDate,inAppPurchasePricePoint",
             "fields[inAppPurchasePricePoints]": "customerPrice",
         },
     )
-    for item in manual.get("included", []):
-        if item["type"] == "inAppPurchasePricePoints":
-            by_currency["USD"].add(float(item["attributes"]["customerPrice"]))
+    points = {
+        item["id"]: item["attributes"]
+        for item in manual.get("included", [])
+        if item["type"] == "inAppPurchasePricePoints"
+    }
+    for row in manual.get("data", []):
+        if row["attributes"].get("endDate") is not None:
+            continue
+        rel = (row.get("relationships", {}).get("inAppPurchasePricePoint") or {}).get("data")
+        if rel and rel["id"] in points:
+            by_currency["USD"].add(float(points[rel["id"]]["customerPrice"]))
     return by_currency
+
+
+def scheduled_changes(client):
+    """Any dated interval currently on the schedule, so the report can say a sale is running."""
+    out = []
+    manual = client.get_json(
+        f"/v1/inAppPurchasePriceSchedules/{LIFETIME_IAP}/manualPrices",
+        {
+            "include": "inAppPurchasePricePoint",
+            "limit": 200,
+            "filter[territory]": "USA",
+            "fields[inAppPurchasePrices]": "startDate,endDate,inAppPurchasePricePoint",
+            "fields[inAppPurchasePricePoints]": "customerPrice",
+        },
+    )
+    points = {
+        i["id"]: i["attributes"] for i in manual.get("included", [])
+        if i["type"] == "inAppPurchasePricePoints"
+    }
+    for row in manual.get("data", []):
+        a = row["attributes"]
+        if a.get("startDate") is None and a.get("endDate") is None:
+            continue
+        rel = (row.get("relationships", {}).get("inAppPurchasePricePoint") or {}).get("data")
+        price = points.get(rel["id"], {}).get("customerPrice") if rel else "?"
+        out.append((a.get("startDate"), a.get("endDate"), price))
+    return sorted(out, key=lambda r: r[0] or "")
 
 
 def main():
@@ -129,7 +184,9 @@ def main():
         sys.exit(f"could not import the ASC client from {asc}: {exc}")
 
     recorded = swift_table()
-    live = live_prices(Client(load_config()))
+    client = Client(load_config())
+    live = regular_prices(client)
+    changes = scheduled_changes(client)
 
     problems = []
 
@@ -163,6 +220,14 @@ def main():
             )
         print(f"{currency:<10}{str(in_app if in_app is not None else '-'):>12}{str(shown):>12}   {status}")
 
+    if changes:
+        print()
+        print("Scheduled price intervals on the USA schedule (the sale, if one is running):")
+        for start, end, price in changes:
+            print(f"  {price:>8}   {start or 'beginning':<12} -> {end or 'no end date'}")
+        print("  The figures above compare the REGULAR price only, which is the interval with")
+        print("  no end date. A running sale is not drift.")
+
     print()
     if problems:
         print("DRIFT FOUND. The paywall would misstate a saving:\n")
@@ -170,8 +235,9 @@ def main():
             print(f"  - {problem}")
         return 1
 
-    print("Every recorded currency matches App Store Connect, and no currency has two prices.")
-    print("Remember this proves the table is current, not that a sale is scheduled.")
+    print("Every recorded regular price matches App Store Connect, and no currency has two.")
+    print("This proves the struck-through price the paywall shows is current. Whether a sale")
+    print("is running is the separate question answered by the interval list above.")
     return 0
 
 
