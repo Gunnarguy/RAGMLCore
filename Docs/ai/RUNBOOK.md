@@ -901,6 +901,12 @@ it. 5.2 is the first build on Xcode 27 / Swift 6.4, and its only job is to turn 
    bash /private/tmp/submit_ios_5_1.sh   # edit version:5.2 first, or use the swap block above
    ```
 
+5b. **Optional: the launch sale.** Lifetime only, `$59.99` to `$39.99`, scheduled as a temporary
+   price change that reverts itself. Run `zsh -ic 'python3 scripts/verify_sale_prices.py'` first;
+   it fails if the price table compiled into the app has drifted from App Store Connect, which
+   would make the paywall misstate a saving. Full procedure and the reasoning, including why the
+   subscriptions are deliberately excluded, in `Docs/Release/5.2/launch-sale.md`.
+
 6. **After approval, and only then, flip the claim.** `Docs/SHIPPED_CAPABILITIES.json`
    `private_cloud_compute.status` to `shipping`; `Docs/SHIPPED_VERSION.json`; README's toolchain and
    PCC paragraphs; the three site patches in `Docs/Release/5.2/sites/` (`git apply` each in its repo,
