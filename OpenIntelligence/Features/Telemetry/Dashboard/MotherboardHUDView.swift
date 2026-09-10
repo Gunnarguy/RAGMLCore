@@ -15,11 +15,12 @@
 //  - iPhone 17 Pro/Max: A19 Pro @ similar to 16 Pro
 //
 
-import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 import Combine
+import SwiftUI
+
+#if canImport(UIKit)
+    import UIKit
+#endif
 
 // MARK: - Device Layout Configuration
 
@@ -67,18 +68,18 @@ enum DeviceComponentLayout {
                     .split(separator: ",")
                     .compactMap { Int($0) }
                 if let major = numbers.first {
-                    if major == 13 { return .iPadPro } // iPad Pro M1
+                    if major == 13 { return .iPadPro }  // iPad Pro M1
                     if major == 14 {
                         let minor = numbers.count > 1 ? numbers[1] : 0
-                        if minor <= 2 { return .iPadMini } // iPad mini 6
-                        if minor >= 3 && minor <= 6 { return .iPadPro } // iPad Pro M2
-                        if minor >= 8 { return .iPadAir } // iPad Air M2
+                        if minor <= 2 { return .iPadMini }  // iPad mini 6
+                        if minor >= 3 && minor <= 6 { return .iPadPro }  // iPad Pro M2
+                        if minor >= 8 { return .iPadAir }  // iPad Air M2
                     }
-                    if major == 15 { return .iPadAir } // iPad Air M3
+                    if major == 15 { return .iPadAir }  // iPad Air M3
                     if major == 16 {
                         let minor = numbers.count > 1 ? numbers[1] : 0
-                        if minor <= 2 { return .iPadMini } // iPad mini 7 (A17 Pro)
-                        return .iPadPro // iPad Pro M4
+                        if minor <= 2 { return .iPadMini }  // iPad mini 7 (A17 Pro)
+                        return .iPadPro  // iPad Pro M4
                     }
                     if major >= 17 { return .iPadPro }
                 }
@@ -86,16 +87,19 @@ enum DeviceComponentLayout {
             }
 
             #if targetEnvironment(simulator)
-            let simModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""
-            if simModel.hasPrefix("iPhone") {
-                let screenHeight = simulatorNativeScreenHeight()
-                if screenHeight >= 2796 { return .iPhone16ProMax }
-                else if screenHeight >= 2556 { return .iPhone16Pro }
-            } else if simModel.hasPrefix("iPad") {
-                if simModel.contains("mini") { return .iPadMini }
-                if simModel.contains("Air") { return .iPadAir }
-                return .iPadPro
-            }
+                let simModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""
+                if simModel.hasPrefix("iPhone") {
+                    let screenHeight = simulatorNativeScreenHeight()
+                    if screenHeight >= 2796 {
+                        return .iPhone16ProMax
+                    } else if screenHeight >= 2556 {
+                        return .iPhone16Pro
+                    }
+                } else if simModel.hasPrefix("iPad") {
+                    if simModel.contains("mini") { return .iPadMini }
+                    if simModel.contains("Air") { return .iPadAir }
+                    return .iPadPro
+                }
             #endif
             return .unknown
         }
@@ -103,13 +107,13 @@ enum DeviceComponentLayout {
 
     @MainActor
     private static func simulatorNativeScreenHeight() -> CGFloat {
-#if canImport(UIKit)
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let screen = (scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)?.screen
-        return screen?.nativeBounds.height ?? 0
-#else
-        return 0
-#endif
+        #if canImport(UIKit)
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let screen = (scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)?.screen
+            return screen?.nativeBounds.height ?? 0
+        #else
+            return 0
+        #endif
     }
 
     var displayName: String {
@@ -237,51 +241,51 @@ enum DeviceComponentLayout {
 
 /// Tracks keyboard height for floating indicator positioning
 #if canImport(UIKit)
-final class KeyboardHeightObserver: ObservableObject {
-    @Published var keyboardHeight: CGFloat = 0
-    @Published var isKeyboardVisible: Bool = false
+    final class KeyboardHeightObserver: ObservableObject {
+        @Published var keyboardHeight: CGFloat = 0
+        @Published var isKeyboardVisible: Bool = false
 
-    init() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillShow),
-            name: UIResponder.keyboardWillShowNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillHide),
-            name: UIResponder.keyboardWillHideNotification,
-            object: nil
-        )
-    }
+        init() {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(keyboardWillShow),
+                name: UIResponder.keyboardWillShowNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(keyboardWillHide),
+                name: UIResponder.keyboardWillHideNotification,
+                object: nil
+            )
+        }
 
-    @objc private func keyboardWillShow(_ notification: Notification) {
-        if let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+        @objc private func keyboardWillShow(_ notification: Notification) {
+            if let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        self.keyboardHeight = frame.height
+                        self.isKeyboardVisible = true
+                    }
+                }
+            }
+        }
+
+        @objc private func keyboardWillHide(_ notification: Notification) {
             DispatchQueue.main.async {
                 withAnimation(.easeOut(duration: 0.25)) {
-                    self.keyboardHeight = frame.height
-                    self.isKeyboardVisible = true
+                    self.keyboardHeight = 0
+                    self.isKeyboardVisible = false
                 }
             }
         }
     }
-
-    @objc private func keyboardWillHide(_ notification: Notification) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.25)) {
-                self.keyboardHeight = 0
-                self.isKeyboardVisible = false
-            }
-        }
-    }
-}
 #else
-/// macOS stub — keyboard height is always zero on macOS.
-final class KeyboardHeightObserver: ObservableObject {
-    @Published var keyboardHeight: CGFloat = 0
-    @Published var isKeyboardVisible: Bool = false
-}
+    /// macOS stub — keyboard height is always zero on macOS.
+    final class KeyboardHeightObserver: ObservableObject {
+        @Published var keyboardHeight: CGFloat = 0
+        @Published var isKeyboardVisible: Bool = false
+    }
 #endif
 
 // MARK: - Full-Screen X-Ray Overlay
@@ -310,7 +314,7 @@ struct HardwareXRayOverlay: View {
     /// rotation transition settles, which is when `effectiveGeometry` is correct, and it
     /// needs no `beginGeneratingDeviceOrientationNotifications` bookkeeping.
     #if canImport(UIKit)
-    @State private var renderedOrientation: UIInterfaceOrientation = .portrait
+        @State private var renderedOrientation: UIInterfaceOrientation = .portrait
     #endif
 
     var showDeviceInfo: Bool = false
@@ -325,10 +329,13 @@ struct HardwareXRayOverlay: View {
         self.showSidebar = showSidebar
     }
 
-
-    /// Combined intensity from all active components
+    /// Combined intensity from all active components, guaranteed finite.
+    ///
+    /// The outer `max(0, ...)` is load-bearing rather than cosmetic: a NaN in the FIRST argument
+    /// of `max` propagates, so the inner three-way max alone could hand a NaN to every consumer
+    /// of this value, including the legend's opacity and several frame dimensions.
     private var totalIntensity: Double {
-        max(telemetry.cpuIntensity, telemetry.gpuIntensity, telemetry.aneIntensity)
+        max(0.0, min(1.0, max(telemetry.cpuIntensity, telemetry.gpuIntensity, telemetry.aneIntensity)))
     }
 
     /// Dominant color based on which component is most active
@@ -338,11 +345,11 @@ struct HardwareXRayOverlay: View {
         let ane = telemetry.aneIntensity
 
         if ane >= gpu && ane >= cpu {
-            return HardwareComponent.neuralEngine.color // Purple
+            return HardwareComponent.neuralEngine.color  // Purple
         } else if gpu >= cpu {
-            return HardwareComponent.gpu.color // Cyan
+            return HardwareComponent.gpu.color  // Cyan
         } else {
-            return HardwareComponent.cpu.color // Orange
+            return HardwareComponent.cpu.color  // Orange
         }
     }
 
@@ -356,61 +363,64 @@ struct HardwareXRayOverlay: View {
     }
 
     #if canImport(UIKit)
-    /// Reads the settled interface orientation from the active scene.
-    ///
-    /// Static, and called only from `onAppear`/`onChange`, so the value lands in
-    /// `renderedOrientation` where SwiftUI can depend on it. Reading this straight from
-    /// `body` is what stopped the overlay re-rendering on rotation.
-    static func resolveInterfaceOrientation() -> UIInterfaceOrientation {
-        guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
-            ?? UIApplication.shared.connectedScenes.first as? UIWindowScene
-        else {
-            return .portrait
+        /// Reads the settled interface orientation from the active scene.
+        ///
+        /// Static, and called only from `onAppear`/`onChange`, so the value lands in
+        /// `renderedOrientation` where SwiftUI can depend on it. Reading this straight from
+        /// `body` is what stopped the overlay re-rendering on rotation.
+        static func resolveInterfaceOrientation() -> UIInterfaceOrientation {
+            guard
+                let scene = UIApplication.shared.connectedScenes.first(where: {
+                    $0.activationState == .foregroundActive
+                }) as? UIWindowScene
+                    ?? UIApplication.shared.connectedScenes.first as? UIWindowScene
+            else {
+                return .portrait
+            }
+            return scene.effectiveGeometry.interfaceOrientation
         }
-        return scene.effectiveGeometry.interfaceOrientation
-    }
     #endif
 
     private func orientRect(_ rect: CGRect) -> CGRect {
         #if canImport(UIKit)
-        let orientation = renderedOrientation
-        switch orientation {
-        case .landscapeLeft:
-            return CGRect(
-                x: rect.minY,
-                y: 1 - rect.minX - rect.width,
-                width: rect.height,
-                height: rect.width
-            )
-        case .landscapeRight:
-            return CGRect(
-                x: 1 - rect.minY - rect.height,
-                y: rect.minX,
-                width: rect.height,
-                height: rect.width
-            )
-        case .portraitUpsideDown:
-            return CGRect(
-                x: 1 - rect.minX - rect.width,
-                y: 1 - rect.minY - rect.height,
-                width: rect.width,
-                height: rect.height
-            )
-        default:
-            return rect
-        }
+            let orientation = renderedOrientation
+            switch orientation {
+            case .landscapeLeft:
+                return CGRect(
+                    x: rect.minY,
+                    y: 1 - rect.minX - rect.width,
+                    width: rect.height,
+                    height: rect.width
+                )
+            case .landscapeRight:
+                return CGRect(
+                    x: 1 - rect.minY - rect.height,
+                    y: rect.minX,
+                    width: rect.height,
+                    height: rect.width
+                )
+            case .portraitUpsideDown:
+                return CGRect(
+                    x: 1 - rect.minX - rect.width,
+                    y: 1 - rect.minY - rect.height,
+                    width: rect.width,
+                    height: rect.height
+                )
+            default:
+                return rect
+            }
         #else
-        return rect
+            return rect
         #endif
     }
 
     private var isMac: Bool {
         #if os(macOS)
-        return true
+            return true
         #elseif targetEnvironment(macCatalyst)
-        return true
+            return true
         #else
-        return ProcessInfo.processInfo.isiOSAppOnMac
+            return ProcessInfo.processInfo.isiOSAppOnMac
         #endif
     }
 
@@ -421,115 +431,115 @@ struct HardwareXRayOverlay: View {
             GeometryReader { geometry in
                 let screenWidth = geometry.size.width
                 let screenHeight = geometry.size.height
-            
-            let orientedSoc = orientRect(layout.socRect)
-            let orientedTaptic = orientRect(layout.tapticRect)
-            
-            let socFrame = rectToScreen(orientedSoc, width: screenWidth, height: screenHeight)
-            let tapticFrame = rectToScreen(orientedTaptic, width: screenWidth, height: screenHeight)
 
-            let showVisualBorders: Bool = {
-                #if os(macOS)
-                return false
-                #elseif targetEnvironment(macCatalyst)
-                return false
-                #else
-                if ProcessInfo.processInfo.isiOSAppOnMac {
-                    return false
-                }
-                return true
-                #endif
-            }()
+                let orientedSoc = orientRect(layout.socRect)
+                let orientedTaptic = orientRect(layout.tapticRect)
 
-            ZStack {
-                // Show SoC border when any compute component is active
-                // DESIGN: Ultra-subtle background presence - not distracting
-                if showVisualBorders && totalIntensity > 0.01 {
-                    GlowingSoCBorder(
-                        frame: socFrame,
-                        color: dominantColor,
-                        intensity: totalIntensity,
-                        glowMultiplier: settings.hudGlowIntensity, // User-controlled
-                        chipName: layout.chipName,
-                        activeComponents: activeComponents,
-                        cpuIntensity: telemetry.cpuIntensity,
-                        gpuIntensity: telemetry.gpuIntensity,
-                        aneIntensity: telemetry.aneIntensity
-                    )
-                    .allowsHitTesting(false)
-                }
+                let socFrame = rectToScreen(orientedSoc, width: screenWidth, height: screenHeight)
+                let tapticFrame = rectToScreen(orientedTaptic, width: screenWidth, height: screenHeight)
 
-                // Show Taptic Engine border when haptics fire (if enabled)
-                // Shows at the physical Taptic Engine location
-                if showVisualBorders && settings.hudShowTaptic && telemetry.hapticIntensity > 0.01 {
-                    GlowingTapticBorder(
-                        frame: tapticFrame,
-                        intensity: telemetry.hapticIntensity,
-                        glowMultiplier: settings.hudGlowIntensity
-                    )
-                    .allowsHitTesting(false)
-                }
-
-                // REMOVED: FloatingTapticIndicator - users want Taptic in HUD legend only
-
-                // REMOVED: Activity label - too distracting
-
-                // Mini legend on LEFT side, below nav bar area
-                // Persists as long as HUD is enabled; shows triggered components
-                // COMPACT: Positioned tighter to corner to minimize interference
-                if isMac {
-                    SiliconLegend(
-                        chipName: layout.chipName,
-                        intensity: max(totalIntensity, telemetry.hapticIntensity),
-                        metricsSummary: settings.hudShowMetrics ? telemetry.compactMetricsSummary : "",
-                        activities: settings.hudShowMetrics ? telemetry.componentActivities : []
-                    )
-                    .scaleEffect(1.4, anchor: .bottomLeading)
-                    .padding(.bottom, 130)
-                    .padding(.leading, 30)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .allowsHitTesting(false)
-                } else {
-                    // The legend lives in its own floating passthrough window
-                    // (FloatingLegendWindowManager): UIKit navigation chrome
-                    // intercepts touches at the window level, so NO view inside
-                    // the main window can be grabbed near the top of the screen.
-                    // A higher window is the only fundamental fix.
-                    Color.clear
-                        .frame(width: 1, height: 1)
-                    #if canImport(UIKit)
-                        .onAppear { FloatingLegendWindowManager.shared.ensureVisible(settings: settings) }
+                let showVisualBorders: Bool = {
+                    #if os(macOS)
+                        return false
+                    #elseif targetEnvironment(macCatalyst)
+                        return false
+                    #else
+                        if ProcessInfo.processInfo.isiOSAppOnMac {
+                            return false
+                        }
+                        return true
                     #endif
-                }
+                }()
 
-                // Device info (for debugging only)
-                if showDeviceInfo && showVisualBorders {
-                    Text("\(layout.displayName)")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(.gray.opacity(0.3))
-                        .position(x: screenWidth / 2, y: screenHeight * 0.02)
+                ZStack {
+                    // Show SoC border when any compute component is active
+                    // DESIGN: Ultra-subtle background presence - not distracting
+                    if showVisualBorders && totalIntensity > 0.01 {
+                        GlowingSoCBorder(
+                            frame: socFrame,
+                            color: dominantColor,
+                            intensity: totalIntensity,
+                            glowMultiplier: settings.hudGlowIntensity,  // User-controlled
+                            chipName: layout.chipName,
+                            activeComponents: activeComponents,
+                            cpuIntensity: telemetry.cpuIntensity,
+                            gpuIntensity: telemetry.gpuIntensity,
+                            aneIntensity: telemetry.aneIntensity
+                        )
                         .allowsHitTesting(false)
+                    }
+
+                    // Show Taptic Engine border when haptics fire (if enabled)
+                    // Shows at the physical Taptic Engine location
+                    if showVisualBorders && settings.hudShowTaptic && telemetry.hapticIntensity > 0.01 {
+                        GlowingTapticBorder(
+                            frame: tapticFrame,
+                            intensity: telemetry.hapticIntensity,
+                            glowMultiplier: settings.hudGlowIntensity
+                        )
+                        .allowsHitTesting(false)
+                    }
+
+                    // REMOVED: FloatingTapticIndicator - users want Taptic in HUD legend only
+
+                    // REMOVED: Activity label - too distracting
+
+                    // Mini legend on LEFT side, below nav bar area
+                    // Persists as long as HUD is enabled; shows triggered components
+                    // COMPACT: Positioned tighter to corner to minimize interference
+                    if isMac {
+                        SiliconLegend(
+                            chipName: layout.chipName,
+                            intensity: max(totalIntensity, telemetry.hapticIntensity),
+                            metricsSummary: settings.hudShowMetrics ? telemetry.compactMetricsSummary : "",
+                            activities: settings.hudShowMetrics ? telemetry.componentActivities : []
+                        )
+                        .scaleEffect(1.4, anchor: .bottomLeading)
+                        .padding(.bottom, 130)
+                        .padding(.leading, 30)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        .allowsHitTesting(false)
+                    } else {
+                        // The legend lives in its own floating passthrough window
+                        // (FloatingLegendWindowManager): UIKit navigation chrome
+                        // intercepts touches at the window level, so NO view inside
+                        // the main window can be grabbed near the top of the screen.
+                        // A higher window is the only fundamental fix.
+                        Color.clear
+                            .frame(width: 1, height: 1)
+                            #if canImport(UIKit)
+                                .onAppear { FloatingLegendWindowManager.shared.ensureVisible(settings: settings) }
+                            #endif
+                    }
+
+                    // Device info (for debugging only)
+                    if showDeviceInfo && showVisualBorders {
+                        Text("\(layout.displayName)")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(.gray.opacity(0.3))
+                            .position(x: screenWidth / 2, y: screenHeight * 0.02)
+                            .allowsHitTesting(false)
+                    }
                 }
+                .ignoresSafeArea()
+                #if canImport(UIKit)
+                    // Re-read the orientation once the rotation has actually landed. On rotation
+                    // the reader's width and height swap, so this fires exactly when the new
+                    // geometry is real and `effectiveGeometry` reports the settled orientation.
+                    .onAppear { renderedOrientation = Self.resolveInterfaceOrientation() }
+                    .onChange(of: geometry.size) { _, _ in
+                        renderedOrientation = Self.resolveInterfaceOrientation()
+                    }
+                #endif
             }
+            // The GeometryReader itself must ignore ALL safe areas (container AND
+            // keyboard), not just its content: geometry.size feeds rectToScreen's
+            // physical-position mapping. A safe-area-shrunken reader (nav bar top,
+            // home indicator bottom, keyboard) maps "87% down the screen" against
+            // a shortened height, drawing the SoC and Taptic Engine borders above
+            // their true hardware locations.
             .ignoresSafeArea()
-            #if canImport(UIKit)
-            // Re-read the orientation once the rotation has actually landed. On rotation
-            // the reader's width and height swap, so this fires exactly when the new
-            // geometry is real and `effectiveGeometry` reports the settled orientation.
-            .onAppear { renderedOrientation = Self.resolveInterfaceOrientation() }
-            .onChange(of: geometry.size) { _, _ in
-                renderedOrientation = Self.resolveInterfaceOrientation()
-            }
-            #endif
         }
-        // The GeometryReader itself must ignore ALL safe areas (container AND
-        // keyboard), not just its content: geometry.size feeds rectToScreen's
-        // physical-position mapping. A safe-area-shrunken reader (nav bar top,
-        // home indicator bottom, keyboard) maps "87% down the screen" against
-        // a shortened height, drawing the SoC and Taptic Engine borders above
-        // their true hardware locations.
-        .ignoresSafeArea()
-    }
     }
 
     private func rectToScreen(_ rect: CGRect, width: CGFloat, height: CGFloat) -> CGRect {
@@ -728,7 +738,16 @@ private struct SiliconLegend: View {
             : "\(megabytes)M"
     }
 
-    private var opacity: Double { 0.45 + 0.15 * min(intensity, 1.0) }
+    /// Opacity for the whole legend, guaranteed finite.
+    ///
+    /// This was `0.45 + 0.15 * min(intensity, 1.0)`, and that argument order is the bug. Swift's
+    /// `min(x, y)` returns `y < x ? y : x`, and every comparison against NaN is false, so
+    /// `min(nan, 1.0)` returns **nan** while `min(1.0, nan)` returns 1.0. A NaN intensity
+    /// therefore reached every `.opacity()` in this view. `max(0, ...)` first discards a NaN for
+    /// the same reason, which is what makes this order safe rather than merely clamped.
+    /// [evidence_level: measured, confidence: exact, evidence_source: swift probe 2026-09-10 —
+    /// min(nan, 1.0) == nan, min(1.0, nan) == 1.0, max(0.0, nan) == 0.0, max(nan, 0.0) == nan]
+    private var opacity: Double { 0.45 + 0.15 * min(1.0, max(0.0, intensity)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -768,14 +787,28 @@ private struct SiliconLegend: View {
                                 // Fill
                                 RoundedRectangle(cornerRadius: 1, style: .continuous)
                                     .fill(componentColor(activity.color).opacity(activity.isActive ? 0.65 : 0.35))
-                                    .frame(width: max(1, geo.size.width * CGFloat(activity.percentage / 100.0)), height: 2)
+                                    .frame(
+                                        // `ComponentActivity` guarantees a finite percentage, and
+                                        // geo.size.width is finite by construction. The clamp is
+                                        // here anyway because a non-finite frame dimension makes
+                                        // SwiftUI assert from inside the body getter, where the
+                                        // reported line is the enclosing view rather than this one.
+                                        width: max(
+                                            1,
+                                            min(
+                                                geo.size.width,
+                                                geo.size.width * CGFloat(activity.percentage / 100.0))),
+                                        height: 2)
                             }
                             .frame(height: geo.size.height)
                         }
                         .frame(width: 22, height: 4)
 
                         // Percentage text
-                        Text("\(Int(activity.percentage))%")
+                        // Int(Double) TRAPS on a non-finite value, and the `>= 0` filter above does
+                            // not screen +infinity. ComponentActivity now guarantees finite,
+                            // so this is the second line of defence rather than the first.
+                            Text("\(Int(activity.percentage.isFinite ? activity.percentage : 0))%")
                             .font(.system(size: 6, weight: .medium, design: .monospaced))
                             .foregroundColor(.white.opacity(0.45))
                             .frame(width: 18, alignment: .trailing)
@@ -890,204 +923,208 @@ private struct SiliconLegend: View {
 // MARK: - Preview
 
 #if DEBUG
-#Preview("SoC Hardware X-Ray") {
-    ZStack {
-        Color.black.opacity(0.95)
-        HardwareXRayOverlay()
+    #Preview("SoC Hardware X-Ray") {
+        ZStack {
+            Color.black.opacity(0.95)
+            HardwareXRayOverlay()
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            // Simulate activity for preview using public API
+            HardwareTelemetryState.shared.sustain(.embeddingGeneration, active: true, intensity: 0.8)
+            HardwareTelemetryState.shared.sustain(.vectorSimilarity, active: true, intensity: 0.4)
+            HardwareTelemetryState.shared.sustain(.ragOrchestration, active: true, intensity: 0.3)
+            HardwareTelemetryState.shared.reportHaptic(style: "preview")
+        }
     }
-    .ignoresSafeArea()
-    .onAppear {
-        // Simulate activity for preview using public API
-        HardwareTelemetryState.shared.sustain(.embeddingGeneration, active: true, intensity: 0.8)
-        HardwareTelemetryState.shared.sustain(.vectorSimilarity, active: true, intensity: 0.4)
-        HardwareTelemetryState.shared.sustain(.ragOrchestration, active: true, intensity: 0.3)
-        HardwareTelemetryState.shared.reportHaptic(style: "preview")
-    }
-}
 #endif
 
 #if canImport(UIKit)
-// MARK: - Floating Legend Window (mini-window architecture)
+    // MARK: - Floating Legend Window (mini-window architecture)
 
-/// The legend lives in a SMALL floating window sized to the legend itself —
-/// the AssistiveTouch pattern. A window that only covers the legend cannot
-/// block or intercept anything else on screen BY CONSTRUCTION: there is no
-/// hit-test override, no passthrough logic, and no claimed-frame bookkeeping
-/// to go stale. Dragging moves the window via a plain UIKit pan recognizer
-/// (incremental translation, immune to the window moving under the finger).
-@MainActor
-final class FloatingLegendWindowManager: NSObject {
-    static let shared = FloatingLegendWindowManager()
-    private var window: UIWindow?
-    private var cancellables = Set<AnyCancellable>()
-    private var isDragging = false
-    private var lastContentSize = CGSize(width: 220, height: 140)
-    private let margin: CGFloat = 16
+    /// The legend lives in a SMALL floating window sized to the legend itself —
+    /// the AssistiveTouch pattern. A window that only covers the legend cannot
+    /// block or intercept anything else on screen BY CONSTRUCTION: there is no
+    /// hit-test override, no passthrough logic, and no claimed-frame bookkeeping
+    /// to go stale. Dragging moves the window via a plain UIKit pan recognizer
+    /// (incremental translation, immune to the window moving under the finger).
+    @MainActor
+    final class FloatingLegendWindowManager: NSObject {
+        static let shared = FloatingLegendWindowManager()
+        private var window: UIWindow?
+        private var cancellables = Set<AnyCancellable>()
+        private var isDragging = false
+        private var lastContentSize = CGSize(width: 220, height: 140)
+        private let margin: CGFloat = 16
 
-    func ensureVisible(settings: SettingsStore) {
-        guard window == nil else { return }
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else { return }
-
-        let host = UIHostingController(rootView: FloatingLegendRoot().environmentObject(settings))
-        host.view.backgroundColor = .clear
-
-        let w = UIWindow(windowScene: scene)
-        w.rootViewController = host
-        w.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
-        w.backgroundColor = .clear
-        w.frame = initialFrame(in: scene)
-        w.isHidden = !settings.showSiliconHUD
-        window = w
-
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        host.view.addGestureRecognizer(pan)
-
-        // Window visibility follows the HUD toggle directly — observed here
-        // (not from inside the window) so it works even while hidden.
-        settings.$showSiliconHUD
-            .receive(on: RunLoop.main)
-            .sink { [weak self] on in self?.window?.isHidden = !on }
-            .store(in: &cancellables)
-
-        // UIKit can stomp custom window frames to full-screen bounds during
-        // scene activation (the relaunch-reset bug): re-assert the saved
-        // position whenever the scene activates.
-        NotificationCenter.default.publisher(for: UIScene.didActivateNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.reassertFrame() }
-            .store(in: &cancellables)
-
-        // Rotation was not handled at all. The window manages its own frame in screen
-        // coordinates, so after a rotation it kept a frame computed for the previous
-        // orientation until something else happened to reassert it. Reported as black
-        // rectangles appearing around the HUD after rotating.
-        //
-        // Deliberately reuses `reassertFrame`, which is already guarded by `!isDragging`
-        // and rebuilds from the persisted centre, so dragging behaviour is untouched.
-        // The `.main` hop lets the rotation settle before the frame is recomputed; the
-        // overlay above reads its orientation the same way, from geometry after the
-        // change rather than from the notification itself.
-        NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.reassertFrame() }
+        func ensureVisible(settings: SettingsStore) {
+            guard window == nil else { return }
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {
+                return
             }
-            .store(in: &cancellables)
-    }
 
-    /// Screen bounds oriented the way the interface currently is.
-    ///
-    /// `UIScreen.bounds` does not rotate: it reports the native portrait size in every
-    /// orientation. Clamping against it meant that in landscape the legend was held
-    /// inside a portrait-width region, and a centre persisted there could be out of
-    /// range on the way back. Both call sites below used it.
-    private func orientedBounds(in scene: UIWindowScene) -> CGRect {
-        let b = scene.screen.bounds
-        let long = max(b.width, b.height)
-        let short = min(b.width, b.height)
-        return scene.effectiveGeometry.interfaceOrientation.isLandscape
-            ? CGRect(x: 0, y: 0, width: long, height: short)
-            : CGRect(x: 0, y: 0, width: short, height: long)
-    }
+            let host = UIHostingController(rootView: FloatingLegendRoot().environmentObject(settings))
+            host.view.backgroundColor = .clear
 
-    private func reassertFrame() {
-        guard !isDragging, let w = window, let scene = w.windowScene else { return }
-        w.frame = targetFrame(contentSize: lastContentSize, in: scene)
-    }
+            let w = UIWindow(windowScene: scene)
+            w.rootViewController = host
+            w.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
+            w.backgroundColor = .clear
+            w.frame = initialFrame(in: scene)
+            w.isHidden = !settings.showSiliconHUD
+            window = w
 
-    /// Frame derived from the PERSISTED center (never from the window's
-    /// current origin, which UIKit may have stomped to zero).
-    private func targetFrame(contentSize: CGSize, in scene: UIWindowScene) -> CGRect {
-        let d = UserDefaults.standard
-        let cx = d.object(forKey: "hudLegendPosX") as? Double ?? -1
-        let cy = d.object(forKey: "hudLegendPosY") as? Double ?? -1
-        let center = CGPoint(x: cx >= 0 ? cx : 110, y: cy >= 0 ? cy : 145)
-        let size = CGSize(width: contentSize.width + margin * 2, height: contentSize.height + margin * 2)
-        let b = orientedBounds(in: scene)
-        var origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
-        origin.x = min(max(origin.x, -size.width + 60), b.width - 60)
-        origin.y = min(max(origin.y, 0), b.height - 60)
-        return CGRect(origin: origin, size: size)
-    }
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            host.view.addGestureRecognizer(pan)
 
-    private func initialFrame(in scene: UIWindowScene) -> CGRect {
-        targetFrame(contentSize: lastContentSize, in: scene)
-    }
+            // Window visibility follows the HUD toggle directly — observed here
+            // (not from inside the window) so it works even while hidden.
+            settings.$showSiliconHUD
+                .receive(on: RunLoop.main)
+                .sink { [weak self] on in self?.window?.isHidden = !on }
+                .store(in: &cancellables)
 
-    /// The SwiftUI side reports the legend's rendered size; the window snugs
-    /// itself around it (+ grab margin) so it never covers more than the box.
-    func legendSizeChanged(_ size: CGSize) {
-        guard let w = window, size.width > 1, size.height > 1 else { return }
-        lastContentSize = size
-        if isDragging {
-            // Mid-drag: resize in place; never yank the box out from under
-            // the finger.
+            // UIKit can stomp custom window frames to full-screen bounds during
+            // scene activation (the relaunch-reset bug): re-assert the saved
+            // position whenever the scene activates.
+            NotificationCenter.default.publisher(for: UIScene.didActivateNotification)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in self?.reassertFrame() }
+                .store(in: &cancellables)
+
+            // Rotation was not handled at all. The window manages its own frame in screen
+            // coordinates, so after a rotation it kept a frame computed for the previous
+            // orientation until something else happened to reassert it. Reported as black
+            // rectangles appearing around the HUD after rotating.
+            //
+            // Deliberately reuses `reassertFrame`, which is already guarded by `!isDragging`
+            // and rebuilds from the persisted centre, so dragging behaviour is untouched.
+            // The `.main` hop lets the rotation settle before the frame is recomputed; the
+            // overlay above reads its orientation the same way, from geometry after the
+            // change rather than from the notification itself.
+            NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    DispatchQueue.main.async { self?.reassertFrame() }
+                }
+                .store(in: &cancellables)
+        }
+
+        /// Screen bounds oriented the way the interface currently is.
+        ///
+        /// `UIScreen.bounds` does not rotate: it reports the native portrait size in every
+        /// orientation. Clamping against it meant that in landscape the legend was held
+        /// inside a portrait-width region, and a centre persisted there could be out of
+        /// range on the way back. Both call sites below used it.
+        private func orientedBounds(in scene: UIWindowScene) -> CGRect {
+            let b = scene.screen.bounds
+            let long = max(b.width, b.height)
+            let short = min(b.width, b.height)
+            return scene.effectiveGeometry.interfaceOrientation.isLandscape
+                ? CGRect(x: 0, y: 0, width: long, height: short)
+                : CGRect(x: 0, y: 0, width: short, height: long)
+        }
+
+        private func reassertFrame() {
+            guard !isDragging, let w = window, let scene = w.windowScene else { return }
+            w.frame = targetFrame(contentSize: lastContentSize, in: scene)
+        }
+
+        /// Frame derived from the PERSISTED center (never from the window's
+        /// current origin, which UIKit may have stomped to zero).
+        private func targetFrame(contentSize: CGSize, in scene: UIWindowScene) -> CGRect {
+            let d = UserDefaults.standard
+            let cx = d.object(forKey: "hudLegendPosX") as? Double ?? -1
+            let cy = d.object(forKey: "hudLegendPosY") as? Double ?? -1
+            let center = CGPoint(x: cx >= 0 ? cx : 110, y: cy >= 0 ? cy : 145)
+            let size = CGSize(width: contentSize.width + margin * 2, height: contentSize.height + margin * 2)
+            let b = orientedBounds(in: scene)
+            var origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+            origin.x = min(max(origin.x, -size.width + 60), b.width - 60)
+            origin.y = min(max(origin.y, 0), b.height - 60)
+            return CGRect(origin: origin, size: size)
+        }
+
+        private func initialFrame(in scene: UIWindowScene) -> CGRect {
+            targetFrame(contentSize: lastContentSize, in: scene)
+        }
+
+        /// The SwiftUI side reports the legend's rendered size; the window snugs
+        /// itself around it (+ grab margin) so it never covers more than the box.
+        func legendSizeChanged(_ size: CGSize) {
+            guard let w = window, size.width > 1, size.height > 1 else { return }
+            lastContentSize = size
+            if isDragging {
+                // Mid-drag: resize in place; never yank the box out from under
+                // the finger.
+                var f = w.frame
+                f.size = CGSize(width: size.width + margin * 2, height: size.height + margin * 2)
+                w.frame = f
+            } else {
+                // Recompute from the persisted center — self-heals any frame
+                // stomp instead of freezing it in (the relaunch-reset bug).
+                guard let scene = w.windowScene else { return }
+                w.frame = targetFrame(contentSize: size, in: scene)
+            }
+        }
+
+        @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+            guard let w = window else { return }
+            if g.state == .began { isDragging = true }
+            let t = g.translation(in: w)
             var f = w.frame
-            f.size = CGSize(width: size.width + margin * 2, height: size.height + margin * 2)
+            f.origin.x += t.x
+            f.origin.y += t.y
             w.frame = f
-        } else {
-            // Recompute from the persisted center — self-heals any frame
-            // stomp instead of freezing it in (the relaunch-reset bug).
-            guard let scene = w.windowScene else { return }
-            w.frame = targetFrame(contentSize: size, in: scene)
+            g.setTranslation(.zero, in: w)
+            if g.state == .ended || g.state == .cancelled {
+                isDragging = false
+                clampAndPersist()
+            }
+        }
+
+        private func clampAndPersist() {
+            guard let w = window, let scene = w.windowScene else { return }
+            let b = orientedBounds(in: scene)
+            var f = w.frame
+            f.origin.x = min(max(f.origin.x, -f.width + 60), b.width - 60)
+            f.origin.y = min(max(f.origin.y, 0), b.height - 60)
+            w.frame = f
+            UserDefaults.standard.set(Double(f.midX), forKey: "hudLegendPosX")
+            UserDefaults.standard.set(Double(f.midY), forKey: "hudLegendPosY")
+            // Retires the one-time "Drag me" hint. Set here rather than on gesture start so
+            // it only counts once the legend has actually moved and been placed.
+            UserDefaults.standard.set(true, forKey: "hudHasBeenDragged")
         }
     }
 
-    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
-        guard let w = window else { return }
-        if g.state == .began { isDragging = true }
-        let t = g.translation(in: w)
-        var f = w.frame
-        f.origin.x += t.x
-        f.origin.y += t.y
-        w.frame = f
-        g.setTranslation(.zero, in: w)
-        if g.state == .ended || g.state == .cancelled {
-            isDragging = false
-            clampAndPersist()
-        }
-    }
+    /// Root of the mini floating window: display-only; dragging is handled by the
+    /// window-level UIPanGestureRecognizer.
+    struct FloatingLegendRoot: View {
+        @EnvironmentObject private var settings: SettingsStore
+        private var telemetry = HardwareTelemetryState.shared
+        private let layout = DeviceComponentLayout.current
 
-    private func clampAndPersist() {
-        guard let w = window, let scene = w.windowScene else { return }
-        let b = orientedBounds(in: scene)
-        var f = w.frame
-        f.origin.x = min(max(f.origin.x, -f.width + 60), b.width - 60)
-        f.origin.y = min(max(f.origin.y, 0), b.height - 60)
-        w.frame = f
-        UserDefaults.standard.set(Double(f.midX), forKey: "hudLegendPosX")
-        UserDefaults.standard.set(Double(f.midY), forKey: "hudLegendPosY")
-        // Retires the one-time "Drag me" hint. Set here rather than on gesture start so
-        // it only counts once the legend has actually moved and been placed.
-        UserDefaults.standard.set(true, forKey: "hudHasBeenDragged")
-    }
-}
-
-/// Root of the mini floating window: display-only; dragging is handled by the
-/// window-level UIPanGestureRecognizer.
-struct FloatingLegendRoot: View {
-    @EnvironmentObject private var settings: SettingsStore
-    private var telemetry = HardwareTelemetryState.shared
-    private let layout = DeviceComponentLayout.current
-
-    var body: some View {
-        ZStack {
-            if settings.showSiliconHUD {
-                SiliconLegend(
-                    chipName: layout.chipName,
-                    intensity: max(max(telemetry.cpuIntensity, telemetry.gpuIntensity), max(telemetry.aneIntensity, telemetry.hapticIntensity)),
-                    metricsSummary: settings.hudShowMetrics ? telemetry.compactMetricsSummary : "",
-                    activities: settings.hudShowMetrics ? telemetry.componentActivities : []
-                )
-                .onGeometryChange(for: CGSize.self) { proxy in
-                    proxy.size
-                } action: { size in
-                    FloatingLegendWindowManager.shared.legendSizeChanged(size)
+        var body: some View {
+            ZStack {
+                if settings.showSiliconHUD {
+                    SiliconLegend(
+                        chipName: layout.chipName,
+                        intensity: max(
+                            max(telemetry.cpuIntensity, telemetry.gpuIntensity),
+                            max(telemetry.aneIntensity, telemetry.hapticIntensity)),
+                        metricsSummary: settings.hudShowMetrics ? telemetry.compactMetricsSummary : "",
+                        activities: settings.hudShowMetrics ? telemetry.componentActivities : []
+                    )
+                    .onGeometryChange(for: CGSize.self) { proxy in
+                        proxy.size
+                    } action: { size in
+                        FloatingLegendWindowManager.shared.legendSizeChanged(size)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-}
 #endif

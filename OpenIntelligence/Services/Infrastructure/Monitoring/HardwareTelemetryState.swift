@@ -27,11 +27,11 @@
 //  └─────────────────────────────────────────┘
 //
 
-import Foundation
-import SwiftUI
 import Combine
+import Foundation
 import Metal
 import Observation
+import SwiftUI
 
 // MARK: - Hardware Component Types
 
@@ -46,11 +46,11 @@ enum HardwareComponent: String, CaseIterable, Sendable {
     var color: Color {
         switch self {
         case .neuralEngine:
-            return Color(red: 0.69, green: 0.32, blue: 0.87) // Neon Purple #AF52DE
+            return Color(red: 0.69, green: 0.32, blue: 0.87)  // Neon Purple #AF52DE
         case .gpu:
-            return Color(red: 0.20, green: 0.68, blue: 0.90) // Neon Cyan #32ADE6
+            return Color(red: 0.20, green: 0.68, blue: 0.90)  // Neon Cyan #32ADE6
         case .cpu:
-            return Color(red: 1.0, green: 0.58, blue: 0.0)   // Electric Orange #FF9500
+            return Color(red: 1.0, green: 0.58, blue: 0.0)  // Electric Orange #FF9500
         case .haptic:
             return Color(red: 1.0, green: 0.84, blue: 0.88)  // Soft Pink #FFD6E0
         }
@@ -220,10 +220,29 @@ final class HardwareTelemetryState {
     /// Structured component activity for legend display
     struct ComponentActivity: Equatable {
         let name: String
-        let color: String // "purple", "cyan", "orange", "pink"
+        let color: String  // "purple", "cyan", "orange", "pink"
         let isActive: Bool
-        let percentage: Double  // 0.0-100.0 - REAL CPU% from Mach APIs, inferred for ANE/GPU
+        /// 0.0-100.0, or exactly -1 as the "not a compute component" sentinel.
+        ///
+        /// Guaranteed finite. The initializer below is the single choke point, because this
+        /// value is multiplied into a SwiftUI frame width and converted with `Int(...)`, and
+        /// both of those fail on a non-finite input: `Int(.infinity)` traps outright, and a
+        /// non-finite frame dimension makes SwiftUI assert. Neither failure names this value,
+        /// which is why they were expensive to trace from a crash in a view body.
+        let percentage: Double
         let opsCount: Int
+
+        init(name: String, color: String, isActive: Bool, percentage: Double, opsCount: Int) {
+            self.name = name
+            self.color = color
+            self.isActive = isActive
+            // Order matters and is not interchangeable. `max(0, x)` discards a NaN because every
+            // comparison against NaN is false and Swift's `max` returns its first argument in
+            // that case; `max(x, 0)` would propagate it. Verified 2026-09-10:
+            // min(nan, 1.0) == nan, min(1.0, nan) == 1.0, max(0.0, nan) == 0.0, max(nan, 0.0) == nan.
+            self.percentage = percentage == -1 ? -1 : Swift.min(100, Swift.max(0, percentage))
+            self.opsCount = opsCount
+        }
     }
 
     /// All triggered components with their stats (for legend) - updated every 500ms
@@ -244,45 +263,49 @@ final class HardwareTelemetryState {
         // CPU - ALWAYS SHOW with REAL percentage from Mach APIs
         // This is the SAME metric Xcode Energy Impact uses
         let realCpuPct = realProcessCpuPercent
-        activities.append(ComponentActivity(
-            name: "CPU",
-            color: "orange",
-            isActive: realCpuPct > 1.0 || cpuIntensity > 0.01,
-            percentage: realCpuPct,
-            opsCount: cpuOperationCount
-        ))
+        activities.append(
+            ComponentActivity(
+                name: "CPU",
+                color: "orange",
+                isActive: realCpuPct > 1.0 || cpuIntensity > 0.01,
+                percentage: realCpuPct,
+                opsCount: cpuOperationCount
+            ))
 
         // ANE (Neural Engine) - ALWAYS SHOW (it's part of the SoC)
         // Apple doesn't expose ANE utilization %, so we use activity intensity
         let anePct = aneIntensity * 100.0
-        activities.append(ComponentActivity(
-            name: "ANE",
-            color: "purple",
-            isActive: aneIntensity > 0.01,
-            percentage: anePct,
-            opsCount: aneOperationCount
-        ))
+        activities.append(
+            ComponentActivity(
+                name: "ANE",
+                color: "purple",
+                isActive: aneIntensity > 0.01,
+                percentage: anePct,
+                opsCount: aneOperationCount
+            ))
 
         // GPU - ALWAYS SHOW (it's part of the SoC)
         // Apple doesn't expose GPU utilization % directly
         let gpuPct = gpuIntensity * 100.0
-        activities.append(ComponentActivity(
-            name: "GPU",
-            color: "cyan",
-            isActive: gpuIntensity > 0.01,
-            percentage: gpuPct,
-            opsCount: gpuOperationCount
-        ))
+        activities.append(
+            ComponentActivity(
+                name: "GPU",
+                color: "cyan",
+                isActive: gpuIntensity > 0.01,
+                percentage: gpuPct,
+                opsCount: gpuOperationCount
+            ))
 
         // Taptic shown separately in the legend — not part of compute %
         if hapticFireCount > 0 {
-            activities.append(ComponentActivity(
-                name: "Taptic",
-                color: "pink",
-                isActive: hapticIntensity > 0.01,
-                percentage: -1, // sentinel: not a compute component
-                opsCount: hapticFireCount
-            ))
+            activities.append(
+                ComponentActivity(
+                    name: "Taptic",
+                    color: "pink",
+                    isActive: hapticIntensity > 0.01,
+                    percentage: -1,  // sentinel: not a compute component
+                    opsCount: hapticFireCount
+                ))
         }
 
         // Only publish if something meaningful changed (prevents layout thrash)
@@ -406,7 +429,8 @@ final class HardwareTelemetryState {
             self?.decay(component)
         }
 
-        Log.verbose("[HardwareTelemetry] Pulse \(activity.rawValue) @ \(Int(clampedIntensity * 100))%", category: .telemetry)
+        Log.verbose(
+            "[HardwareTelemetry] Pulse \(activity.rawValue) @ \(Int(clampedIntensity * 100))%", category: .telemetry)
     }
 
     /// Report a sustained hardware activity (stays active until explicitly stopped)
@@ -476,7 +500,7 @@ final class HardwareTelemetryState {
                     self.setIntensity(pulsedIntensity, for: activity.primaryComponent)
                 }
 
-                phase += 0.15 // ~40ms per frame ≈ 25fps pulse
+                phase += 0.15  // ~40ms per frame ≈ 25fps pulse
                 try? await Task.sleep(for: .milliseconds(40))
             }
         }
@@ -608,7 +632,7 @@ final class HardwareTelemetryState {
             if cpuFirstOp == nil { cpuFirstOp = Date() }
             cpuOperationCount += 1
         case .haptic:
-            break // Haptic is handled separately in reportHaptic
+            break  // Haptic is handled separately in reportHaptic
         }
         rebuildComponentActivities()
     }
@@ -846,7 +870,7 @@ final class HardwareTelemetryState {
         }
 
         // GPU memory (if significant)
-        if gpuMemoryAllocated > 1_000_000 { // > 1MB
+        if gpuMemoryAllocated > 1_000_000 {  // > 1MB
             let mb = Double(gpuMemoryAllocated) / 1_000_000
             parts.append(String(format: "🎮%.0fMB", mb))
         }
@@ -902,27 +926,27 @@ final class HardwareTelemetryState {
     // MARK: - Debug / Demo Methods
 
     #if DEBUG
-    /// Demo mode: Cycle through all components for testing
-    func runDemo() {
-        Task {
-            // Neural Engine burst
-            pulse(.embeddingGeneration, intensity: 1.0, duration: 0.3)
-            try? await Task.sleep(for: .milliseconds(500))
+        /// Demo mode: Cycle through all components for testing
+        func runDemo() {
+            Task {
+                // Neural Engine burst
+                pulse(.embeddingGeneration, intensity: 1.0, duration: 0.3)
+                try? await Task.sleep(for: .milliseconds(500))
 
-            // GPU burst
-            pulse(.vectorSimilarity, intensity: 0.9, duration: 0.3)
-            try? await Task.sleep(for: .milliseconds(500))
+                // GPU burst
+                pulse(.vectorSimilarity, intensity: 0.9, duration: 0.3)
+                try? await Task.sleep(for: .milliseconds(500))
 
-            // CPU burst
-            pulse(.ragOrchestration, intensity: 0.8, duration: 0.3)
-            try? await Task.sleep(for: .milliseconds(500))
+                // CPU burst
+                pulse(.ragOrchestration, intensity: 0.8, duration: 0.3)
+                try? await Task.sleep(for: .milliseconds(500))
 
-            // Sustained LLM inference
-            sustain(.llmInference, active: true)
-            try? await Task.sleep(for: .seconds(2))
-            sustain(.llmInference, active: false)
+                // Sustained LLM inference
+                sustain(.llmInference, active: true)
+                try? await Task.sleep(for: .seconds(2))
+                sustain(.llmInference, active: false)
+            }
         }
-    }
     #endif
 }
 
@@ -1012,7 +1036,9 @@ enum HardwareTelemetryReporter {
     }
 
     /// Report GPU compute with latency from any thread - HIGH PRIORITY
-    nonisolated static func reportGPUComputeWithLatency(operation: HardwareActivityType = .vectorSimilarity, latencyMs: Double) {
+    nonisolated static func reportGPUComputeWithLatency(
+        operation: HardwareActivityType = .vectorSimilarity, latencyMs: Double
+    ) {
         Task(priority: .high) { @MainActor in
             HardwareTelemetryState.shared.reportGPUComputeWithLatency(operation: operation, latencyMs: latencyMs)
         }
