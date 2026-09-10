@@ -38,56 +38,60 @@ struct DeveloperDiagnosticsHubView: View {
             } header: {
                 Text("Pipeline Debugging")
             } footer: {
-                Text("Pipeline Trace shows chunk flow through RAG stages. Force Reasoning uses multi-session even when not needed.")
+                Text(
+                    "Pipeline Trace shows chunk flow through RAG stages. Force Reasoning uses multi-session even when not needed."
+                )
             }
 
             // Private Cloud Compute Diagnostics
             Section {
                 #if canImport(FoundationModels)
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    if let capability = pccCapability {
-                        LabeledContent("PCC Entitlement", value: capability.hasPCCEntitlement ? "Present" : "Missing")
-                        LabeledContent("PCC Availability", value: capability.pccAvailable ? "Available" : "Unavailable")
-                        LabeledContent(
-                            "Context Size",
-                            value: capability.pccContextSize.map { "\($0) tokens" } ?? "Not reported"
-                        )
-                        LabeledContent("Quota Status", value: capability.pccQuota.rawValue)
-                        LabeledContent("Limit Reached", value: capability.pccQuota == .limitReached ? "Yes" : "No")
-                        if let reason = capability.unavailabilityReason, !capability.pccAvailable {
-                            Text(reason)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        
-                        let policyRoute = FoundationModelRoutePolicy.determineRoute(
-                            queryType: .maximum,
-                            estimatedContextTokens: 1000,
-                            config: InferenceConfig(
-                                maxTokens: 0,
-                                temperature: 0.7,
-                                topP: 0.0,
-                                topK: 0,
-                                systemPrompt: nil,
-                                contextLength: 32768,
-                                executionContext: .automatic,
-                                allowPrivateCloudCompute: true,
-                                disableTools: false
+                    if #available(iOS 26.0, macOS 26.0, *) {
+                        if let capability = pccCapability {
+                            LabeledContent(
+                                "PCC Entitlement", value: capability.hasPCCEntitlement ? "Present" : "Missing")
+                            LabeledContent(
+                                "PCC Availability", value: capability.pccAvailable ? "Available" : "Unavailable")
+                            LabeledContent(
+                                "Context Size",
+                                value: capability.pccContextSize.map { "\($0) tokens" } ?? "Not reported"
                             )
-                        )
-                        
-                        switch policyRoute {
-                        case .privateCloudCompute(let reasoning):
-                            LabeledContent("Maximum Reasoning", value: String(describing: reasoning).capitalized)
-                        default:
-                            LabeledContent("Maximum Reasoning", value: "N/A")
+                            LabeledContent("Quota Status", value: capability.pccQuota.rawValue)
+                            LabeledContent("Limit Reached", value: capability.pccQuota == .limitReached ? "Yes" : "No")
+                            if let reason = capability.unavailabilityReason, !capability.pccAvailable {
+                                Text(reason)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            let policyRoute = FoundationModelRoutePolicy.determineRoute(
+                                queryType: .maximum,
+                                estimatedContextTokens: 1000,
+                                config: InferenceConfig(
+                                    maxTokens: 0,
+                                    temperature: 0.7,
+                                    topP: 0.0,
+                                    topK: 0,
+                                    systemPrompt: nil,
+                                    contextLength: 32768,
+                                    executionContext: .automatic,
+                                    allowPrivateCloudCompute: true,
+                                    disableTools: false
+                                )
+                            )
+
+                            switch policyRoute {
+                            case .privateCloudCompute(let reasoning):
+                                LabeledContent("Maximum Reasoning", value: String(describing: reasoning).capitalized)
+                            default:
+                                LabeledContent("Maximum Reasoning", value: "N/A")
+                            }
+                        } else {
+                            ProgressView("Reading PCC capability…")
                         }
                     } else {
-                        ProgressView("Reading PCC capability…")
+                        Text("Requires iOS 26+")
                     }
-                } else {
-                    Text("Requires iOS 26+")
-                }
                 #endif
             } header: {
                 Text("Private Cloud Compute")
@@ -149,11 +153,12 @@ struct DeveloperDiagnosticsHubView: View {
                     Label("RAG Accuracy", systemImage: "checkmark.seal.fill")
                 }
                 #if DEBUG
-                NavigationLink {
-                    ValidationDashboardView(ragService: ragService, settingsStore: SettingsStore(ragService: ragService))
-                } label: {
-                    Label("Validation Benchmark", systemImage: "gauge.with.dots.needle.bottom.100percent")
-                }
+                    NavigationLink {
+                        ValidationDashboardView(
+                            ragService: ragService, settingsStore: SettingsStore(ragService: ragService))
+                    } label: {
+                        Label("Validation Benchmark", systemImage: "gauge.with.dots.needle.bottom.100percent")
+                    }
                 #endif
                 NavigationLink {
                     ChunkInspectorView(ragService: ragService)
@@ -210,17 +215,17 @@ struct DeveloperDiagnosticsHubView: View {
         }
         .navigationTitle("Developer")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.large)
         #endif
-        .onAppear { applyLoggingSettings() }
+        .onAppear { readLoggingSettings() }
         .task { await refreshPCCCapability() }
     }
 
     private func refreshPCCCapability() async {
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, macOS 26.0, *) {
-            pccCapability = await LiveFoundationModelCapabilityProvider().snapshot()
-        }
+            if #available(iOS 26.0, macOS 26.0, *) {
+                pccCapability = await LiveFoundationModelCapabilityProvider().snapshot()
+            }
         #endif
     }
 
@@ -268,16 +273,53 @@ struct DeveloperDiagnosticsHubView: View {
 
     // MARK: - Logging
 
+    /// The five categories this screen has toggles for.
+    ///
+    /// There are thirteen. The other eight (`initialization`, `ingestion`, `embedding`,
+    /// `retrieval`, `telemetry`, `ui`, `billing`, `pipelineTrace`) have no control here and must
+    /// therefore be left exactly as the build set them, rather than dropped because this screen
+    /// cannot draw a switch for them.
+    private static let controlledCategories:
+        [(LoggingConfiguration.Category, KeyPath<DeveloperDiagnosticsHubView, Bool>)] = [
+            (.pipeline, \.enablePipelineLogs),
+            (.performance, \.enablePerformanceLogs),
+            (.llm, \.enableLLMLogs),
+            (.streaming, \.enableStreamingLogs),
+            (.vectorDB, \.enableVectorDBLogs),
+        ]
+
+    /// Show what logging is actually doing right now, without changing it.
+    ///
+    /// This runs on appear and deliberately reads rather than writes. It used to call
+    /// `applyLoggingSettings()` instead, which pushed this screen's `@AppStorage` defaults into
+    /// the live configuration and made logging strictly worse the first time anyone opened the
+    /// screen: a Debug build starts at `.verbose` with all thirteen categories on, and the
+    /// defaults here are `.info` with five, of which `streaming` is off. Two levels and eight
+    /// categories went dark, for the rest of the session, on a screen whose entire purpose is
+    /// seeing more rather than less. Nothing put them back.
+    private func readLoggingSettings() {
+        loggingLevelRaw = LoggingConfiguration.currentLevel.rawValue
+        let live = LoggingConfiguration.enabledCategories
+        enablePipelineLogs = live.contains(.pipeline)
+        enablePerformanceLogs = live.contains(.performance)
+        enableLLMLogs = live.contains(.llm)
+        enableStreamingLogs = live.contains(.streaming)
+        enableVectorDBLogs = live.contains(.vectorDB)
+    }
+
+    /// Apply a change the user actually made, leaving uncontrolled categories alone.
     private func applyLoggingSettings() {
         let level = LoggingConfiguration.Level(rawValue: loggingLevelRaw) ?? .info
         LoggingConfiguration.currentLevel = level
 
-        var categories = Set<LoggingConfiguration.Category>()
-        if enablePipelineLogs { categories.insert(.pipeline) }
-        if enablePerformanceLogs { categories.insert(.performance) }
-        if enableLLMLogs { categories.insert(.llm) }
-        if enableStreamingLogs { categories.insert(.streaming) }
-        if enableVectorDBLogs { categories.insert(.vectorDB) }
+        var categories = LoggingConfiguration.enabledCategories
+        for (category, toggle) in Self.controlledCategories {
+            if self[keyPath: toggle] {
+                categories.insert(category)
+            } else {
+                categories.remove(category)
+            }
+        }
         LoggingConfiguration.enabledCategories = categories
     }
 
@@ -317,6 +359,6 @@ struct DeveloperDiagnosticsHubView: View {
         DeveloperDiagnosticsHubView(ragService: RAGService())
     }
     #if os(iOS)
-    .navigationViewStyle(.stack)
+        .navigationViewStyle(.stack)
     #endif
 }
