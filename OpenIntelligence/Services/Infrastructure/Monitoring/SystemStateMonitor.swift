@@ -9,11 +9,12 @@
 //
 
 import Combine
-import Foundation
-#if canImport(UIKit)
-import UIKit
-#endif
 import Darwin.Mach
+import Foundation
+
+#if canImport(UIKit)
+    import UIKit
+#endif
 
 // MARK: - System State Snapshot
 
@@ -24,12 +25,12 @@ struct SystemStateSnapshot: Sendable, Equatable {
     let thermalStateName: String
 
     // Battery
-    let batteryLevel: Float // 0.0-1.0, -1 if unknown
-#if canImport(UIKit)
-    let batteryState: UIDevice.BatteryState
-#else
-    let batteryState: MacBatteryState
-#endif
+    let batteryLevel: Float  // 0.0-1.0, -1 if unknown
+    #if canImport(UIKit)
+        let batteryState: UIDevice.BatteryState
+    #else
+        let batteryState: MacBatteryState
+    #endif
     let isCharging: Bool
     let isFullyCharged: Bool
 
@@ -45,8 +46,8 @@ struct SystemStateSnapshot: Sendable, Equatable {
     let isLowPowerModeEnabled: Bool
 
     // REAL CPU Utilization (via Mach APIs - same as Xcode Energy Impact)
-    let systemCpuUsage: Double      // System-wide CPU % (0.0-100.0)
-    let processCpuUsage: Double     // Our app's CPU % (0.0-100.0)
+    let systemCpuUsage: Double  // System-wide CPU % (0.0-100.0)
+    let processCpuUsage: Double  // Our app's CPU % (0.0-100.0)
 
     // System
     let systemUptime: TimeInterval
@@ -59,7 +60,7 @@ struct SystemStateSnapshot: Sendable, Equatable {
 
     // Computed
     var batteryPercent: Int {
-        batteryLevel >= 0 ? Int(batteryLevel * 100) : -1
+        batteryLevel >= 0 ? Self.safePercent(Double(batteryLevel) * 100) : -1
     }
 
     /// Display string for battery - handles Mac/desktop where battery info unavailable
@@ -75,18 +76,34 @@ struct SystemStateSnapshot: Sendable, Equatable {
         Int(availableMemoryBytes / 1024 / 1024)
     }
 
+    /// Clamp a Double to a percent an `Int` can actually hold.
+    ///
+    /// `Int(someDouble)` **traps** when the value is NaN or infinite: "Double value cannot be
+    /// converted to Int because it is either infinite or NaN". Every percent below is read
+    /// directly by SwiftUI view bodies, so that trap aborts the app from inside a body getter,
+    /// where the reported line is the enclosing view rather than the conversion. That is the
+    /// crash that made on-device debugging unusable, and it cost several sessions to trace
+    /// because the stack never names the failing expression.
+    ///
+    /// `memoryUsageRatio` is the concrete way this happens: it is
+    /// `1.0 - (Double(available) / Double(total))`, and a zero `physicalMemory` makes it NaN.
+    private static func safePercent(_ value: Double, upperBound: Double = 100) -> Int {
+        guard value.isFinite else { return 0 }
+        return Int(Swift.min(upperBound, Swift.max(0, value)))
+    }
+
     var memoryUsagePercent: Int {
-        Int(memoryUsageRatio * 100)
+        Self.safePercent(memoryUsageRatio * 100)
     }
 
     /// System CPU usage as integer percent (0-100)
     var systemCpuPercent: Int {
-        Int(systemCpuUsage.rounded())
+        Self.safePercent(systemCpuUsage.rounded())
     }
 
     /// Process (our app) CPU usage as integer percent (0-100)
     var processCpuPercent: Int {
-        Int(processCpuUsage.rounded())
+        Self.safePercent(processCpuUsage.rounded())
     }
 
     /// Human-readable summary
@@ -108,19 +125,15 @@ struct SystemStateSnapshot: Sendable, Equatable {
 
     /// Whether any metric is in a warning/critical state
     var hasWarning: Bool {
-        thermalState == .serious ||
-            thermalState == .critical ||
-            memoryPressure == .warning ||
-            memoryPressure == .critical ||
-            (batteryLevel >= 0 && batteryLevel < 0.10 && !isCharging) ||
-            isLowPowerModeEnabled
+        thermalState == .serious || thermalState == .critical || memoryPressure == .warning
+            || memoryPressure == .critical || (batteryLevel >= 0 && batteryLevel < 0.10 && !isCharging)
+            || isLowPowerModeEnabled
     }
 
     /// Whether any metric is in a critical state
     var hasCritical: Bool {
-        thermalState == .critical ||
-            memoryPressure == .critical ||
-            (batteryLevel >= 0 && batteryLevel < 0.05 && !isCharging)
+        thermalState == .critical || memoryPressure == .critical
+            || (batteryLevel >= 0 && batteryLevel < 0.05 && !isCharging)
     }
 }
 
@@ -150,10 +163,10 @@ enum MachCPUMonitor {
 
         guard result == KERN_SUCCESS else { return 0.0 }
 
-        let userTicks = UInt64(cpuInfo.cpu_ticks.0)    // CPU_STATE_USER
+        let userTicks = UInt64(cpuInfo.cpu_ticks.0)  // CPU_STATE_USER
         let systemTicks = UInt64(cpuInfo.cpu_ticks.1)  // CPU_STATE_SYSTEM
-        let idleTicks = UInt64(cpuInfo.cpu_ticks.2)    // CPU_STATE_IDLE
-        let niceTicks = UInt64(cpuInfo.cpu_ticks.3)    // CPU_STATE_NICE
+        let idleTicks = UInt64(cpuInfo.cpu_ticks.2)  // CPU_STATE_IDLE
+        let niceTicks = UInt64(cpuInfo.cpu_ticks.3)  // CPU_STATE_NICE
 
         guard let prev = previousSystemTicks else {
             // First call - store baseline and return 0
@@ -161,10 +174,14 @@ enum MachCPUMonitor {
             return 0.0
         }
 
-        let userDelta = userTicks - prev.user
-        let systemDelta = systemTicks - prev.system
-        let idleDelta = idleTicks - prev.idle
-        let niceDelta = niceTicks - prev.nice
+        // `&-` is not a shortcut here, it is the fix. These are UInt64 and a plain `-` TRAPS
+        // with "arithmetic operation overflowed" the moment a tick counter goes backwards,
+        // which host_statistics can do across a counter reset. Subtracting with wraparound and
+        // then discarding an implausible delta keeps a monitoring path from aborting the app.
+        let userDelta = userTicks >= prev.user ? userTicks - prev.user : 0
+        let systemDelta = systemTicks >= prev.system ? systemTicks - prev.system : 0
+        let idleDelta = idleTicks >= prev.idle ? idleTicks - prev.idle : 0
+        let niceDelta = niceTicks >= prev.nice ? niceTicks - prev.nice : 0
 
         let totalDelta = userDelta + systemDelta + idleDelta + niceDelta
         guard totalDelta > 0 else { return 0.0 }
@@ -207,7 +224,9 @@ enum MachCPUMonitor {
             return 0.0
         }
 
-        let cpuDeltaUs = Double(totalCPUTimeUs - prevTime)
+        // Same trap as the system ticks above: UInt64 subtraction, and CPU time is only
+        // monotonic until it isn't.
+        let cpuDeltaUs = Double(totalCPUTimeUs >= prevTime ? totalCPUTimeUs - prevTime : 0)
         let wallDeltaUs = (now - prevMeasure) * 1_000_000  // Convert to microseconds
 
         guard wallDeltaUs > 0 else { return 0.0 }
@@ -271,7 +290,7 @@ final class SystemStateMonitor: ObservableObject {
 
     /// How often to capture state (seconds)
     private let captureInterval: TimeInterval = 2.0
-    private let maxHistoryCount = 60 // Keep last 2 minutes
+    private let maxHistoryCount = 60  // Keep last 2 minutes
 
     // MARK: - Private
 
@@ -286,9 +305,9 @@ final class SystemStateMonitor: ObservableObject {
 
     private init() {
         // Enable battery monitoring (iOS only)
-#if canImport(UIKit)
-        UIDevice.current.isBatteryMonitoringEnabled = true
-#endif
+        #if canImport(UIKit)
+            UIDevice.current.isBatteryMonitoringEnabled = true
+        #endif
 
         // Capture initial state
         currentState = Self.captureState()
@@ -379,62 +398,67 @@ final class SystemStateMonitor: ObservableObject {
         // Battery - Mac detection needed because iOS battery API often returns garbage on Mac
         let isMac = DeviceCapabilityService.shared.isMac || processInfo.isiOSAppOnMac
 
-#if canImport(UIKit)
-        let device = UIDevice.current
-        let rawBatteryLevel = device.batteryLevel
-        let rawBatteryState = device.batteryState
+        #if canImport(UIKit)
+            let device = UIDevice.current
+            let rawBatteryLevel = device.batteryLevel
+            let rawBatteryState = device.batteryState
 
-        let batteryLevel: Float
-        let batteryState: UIDevice.BatteryState
-        let isCharging: Bool
-        let isFullyCharged: Bool
+            let batteryLevel: Float
+            let batteryState: UIDevice.BatteryState
+            let isCharging: Bool
+            let isFullyCharged: Bool
 
-        if isMac {
-            // On Mac, check if battery values look like garbage
-            let looksLikeGarbage = rawBatteryState == .unknown ||
-                rawBatteryLevel < 0 ||
-                (rawBatteryLevel < 0.05 && rawBatteryState != .unplugged)
+            if isMac {
+                // On Mac, check if battery values look like garbage
+                let looksLikeGarbage =
+                    rawBatteryState == .unknown || rawBatteryLevel < 0
+                    || (rawBatteryLevel < 0.05 && rawBatteryState != .unplugged)
 
-            if looksLikeGarbage {
-                // Garbage values - assume full power (desktop Mac or broken API)
-                batteryLevel = 1.0
-                batteryState = .full
-                isCharging = true
-                isFullyCharged = true
+                if looksLikeGarbage {
+                    // Garbage values - assume full power (desktop Mac or broken API)
+                    batteryLevel = 1.0
+                    batteryState = .full
+                    isCharging = true
+                    isFullyCharged = true
+                } else {
+                    // Values look plausible - trust them (MacBook with working battery API)
+                    batteryLevel = rawBatteryLevel
+                    batteryState = rawBatteryState
+                    isCharging = rawBatteryState == .charging || rawBatteryState == .full
+                    isFullyCharged = rawBatteryState == .full
+                }
             } else {
-                // Values look plausible - trust them (MacBook with working battery API)
                 batteryLevel = rawBatteryLevel
                 batteryState = rawBatteryState
                 isCharging = rawBatteryState == .charging || rawBatteryState == .full
                 isFullyCharged = rawBatteryState == .full
             }
-        } else {
-            batteryLevel = rawBatteryLevel
-            batteryState = rawBatteryState
-            isCharging = rawBatteryState == .charging || rawBatteryState == .full
-            isFullyCharged = rawBatteryState == .full
-        }
-#else
-        // macOS: assume plugged in / full
-        let batteryLevel: Float = 1.0
-        let batteryState: MacBatteryState = .full
-        let isCharging = true
-        let isFullyCharged = true
-        let _ = isMac // suppress unused warning
-#endif
+        #else
+            // macOS: assume plugged in / full
+            let batteryLevel: Float = 1.0
+            let batteryState: MacBatteryState = .full
+            let isCharging = true
+            let isFullyCharged = true
+            let _ = isMac  // suppress unused warning
+        #endif
 
         // Memory
         let availableMemory: UInt64
         #if os(iOS)
-        availableMemory = UInt64(os_proc_available_memory())
+            availableMemory = UInt64(os_proc_available_memory())
         #else
-        availableMemory = Self.macAvailableMemory()
+            availableMemory = Self.macAvailableMemory()
         #endif
         let totalMemory = processInfo.physicalMemory
-        let memoryRatio = 1.0 - (Double(availableMemory) / Double(totalMemory))
+        // `physicalMemory` should never be zero, but 0/0 is NaN and a NaN here reaches
+        // `memoryUsagePercent`, which converts with `Int(...)` and traps. Guarding at the source
+        // costs one branch and means no consumer has to know.
+        let memoryRatio = totalMemory > 0
+            ? 1.0 - (Double(availableMemory) / Double(totalMemory))
+            : 0.0
 
         let memoryPressure: MemoryPressureLevel
-        let availableRatio = Double(availableMemory) / Double(totalMemory)
+        let availableRatio = totalMemory > 0 ? Double(availableMemory) / Double(totalMemory) : 1.0
         if availableRatio < 0.10 {
             memoryPressure = .critical
         } else if availableRatio < 0.20 {
@@ -451,11 +475,11 @@ final class SystemStateMonitor: ObservableObject {
         // System
         let uptime = processInfo.systemUptime
         let osVersion = "\(processInfo.operatingSystemVersionString)"
-#if canImport(UIKit)
-        let deviceModel = UIDevice.current.model
-#else
-        let deviceModel = "Mac"
-#endif
+        #if canImport(UIKit)
+            let deviceModel = UIDevice.current.model
+        #else
+            let deviceModel = "Mac"
+        #endif
 
         // Pipeline
         let optimizer = AdaptivePipelineOptimizer.shared
@@ -536,47 +560,46 @@ final class SystemStateMonitor: ObservableObject {
         }
 
         // Battery level changes (iOS only)
-#if canImport(UIKit)
-        batteryLevelObserver = NotificationCenter.default.addObserver(
-            forName: UIDevice.batteryLevelDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                let oldLevel = self?.currentState.batteryLevel ?? 0
-                self?.updateState()
-                // Haptic for battery milestones (every 10%)
-                if let newLevel = self?.currentState.batteryLevel {
-                    let oldTens = Int(oldLevel * 10)
-                    let newTens = Int(newLevel * 10)
-                    if oldTens != newTens && newLevel >= 0 {
-                        DSHaptics.tick()
+        #if canImport(UIKit)
+            batteryLevelObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.batteryLevelDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    let oldLevel = self?.currentState.batteryLevel ?? 0
+                    self?.updateState()
+                    // Haptic for battery milestones (every 10%)
+                    if let newLevel = self?.currentState.batteryLevel {
+                        let oldTens = Int(oldLevel * 10)
+                        let newTens = Int(newLevel * 10)
+                        if oldTens != newTens && newLevel >= 0 {
+                            DSHaptics.tick()
+                        }
                     }
                 }
             }
-        }
 
-        // Battery state changes (charging, unplugged)
-        batteryStateObserver = NotificationCenter.default.addObserver(
-            forName: UIDevice.batteryStateDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                let oldCharging = self?.currentState.isCharging ?? false
-                self?.updateState()
-                // Haptic for charger connect/disconnect
-                if let newCharging = self?.currentState.isCharging, oldCharging != newCharging {
-                    if newCharging {
-                        DSHaptics.success() // Connected
-                    } else {
-                        DSHaptics.soft() // Disconnected
+            // Battery state changes (charging, unplugged)
+            batteryStateObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.batteryStateDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    let oldCharging = self?.currentState.isCharging ?? false
+                    self?.updateState()
+                    // Haptic for charger connect/disconnect
+                    if let newCharging = self?.currentState.isCharging, oldCharging != newCharging {
+                        if newCharging {
+                            DSHaptics.success()  // Connected
+                        } else {
+                            DSHaptics.soft()  // Disconnected
+                        }
                     }
                 }
             }
-        }
-#endif
-
+        #endif
 
         // Low power mode changes
         lowPowerObserver = NotificationCenter.default.addObserver(
@@ -595,32 +618,32 @@ final class SystemStateMonitor: ObservableObject {
         }
 
         // Memory warnings
-#if canImport(UIKit)
-        memoryObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didReceiveMemoryWarningNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.updateState()
-                // Distinct warning haptic for memory pressure
-                DSHaptics.warning()
+        #if canImport(UIKit)
+            memoryObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.updateState()
+                    // Distinct warning haptic for memory pressure
+                    DSHaptics.warning()
+                }
             }
-        }
-#endif
+        #endif
     }
 
     /// Haptic feedback based on thermal state
     private func triggerThermalHaptic(for state: ProcessInfo.ThermalState) {
         switch state {
         case .nominal:
-            DSHaptics.soft() // Cooling down - gentle
+            DSHaptics.soft()  // Cooling down - gentle
         case .fair:
-            DSHaptics.thermalPulse(intensity: 0.4) // Getting warm
+            DSHaptics.thermalPulse(intensity: 0.4)  // Getting warm
         case .serious:
-            DSHaptics.thermalPulse(intensity: 0.7) // Hot
+            DSHaptics.thermalPulse(intensity: 0.7)  // Hot
         case .critical:
-            DSHaptics.warning() // Critical warning
+            DSHaptics.warning()  // Critical warning
         @unknown default:
             break
         }
@@ -643,16 +666,16 @@ final class SystemStateMonitor: ObservableObject {
 #if canImport(UIKit)
 
 #else
-/// macOS battery state stub (no UIDevice available on macOS native target)
-enum MacBatteryState: Sendable, Equatable, CustomStringConvertible {
-    case unknown, unplugged, charging, full
-    public var description: String {
-        switch self {
-        case .unknown: return "Unknown"
-        case .unplugged: return "Unplugged"
-        case .charging: return "Charging"
-        case .full: return "Full"
+    /// macOS battery state stub (no UIDevice available on macOS native target)
+    enum MacBatteryState: Sendable, Equatable, CustomStringConvertible {
+        case unknown, unplugged, charging, full
+        public var description: String {
+            switch self {
+            case .unknown: return "Unknown"
+            case .unplugged: return "Unplugged"
+            case .charging: return "Charging"
+            case .full: return "Full"
+            }
         }
     }
-}
 #endif
