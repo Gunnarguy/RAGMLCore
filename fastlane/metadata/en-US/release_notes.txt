@@ -1,8 +1,9 @@
-PRIVATE CLOUD COMPUTE, TURNED ON
+This release turns on Private Cloud Compute. It needs iOS, iPadOS or macOS 27; on earlier systems everything continues to run on the device exactly as it did in 5.1.
 
-Every release since 4.6 has carried Apple's Private Cloud Compute support compiled out, waiting on iOS and macOS 27. This one turns it on. Requires iOS, iPadOS or macOS 27; on earlier systems everything continues to run on the device.
 
-• When a question needs more room than the model on your device can hold, the app can now hand that single writing step to Apple's Private Cloud Compute. Reading your files, searching them, choosing what to cite and checking the finished answer still happen on your device, exactly as before.
+PRIVATE CLOUD COMPUTE
+
+• When a question needs more room than the model on your device can hold, the app can now hand that single writing step to Apple's Private Cloud Compute. Reading your files, searching them, choosing what to cite and checking the finished answer still happen on your device.
 
 • Nothing leaves without asking. Before anything is sent, a sheet shows you what would go: how many passages, how large, and why. Allow it once, allow it always, or keep everything on the device. You can also pin routing to On-Device in Settings and the question never comes up.
 
@@ -13,8 +14,16 @@ Every release since 4.6 has carried Apple's Private Cloud Compute support compil
 • Measured on an iPhone with the A18 Pro: roughly 86 tokens per second from Private Cloud Compute, against 27 on the device.
 
 
-ALSO IN THIS RELEASE
+DEEP THINK AND MAXIMUM ASK FOR MORE
 
-• Deep Think and Maximum now ask Private Cloud Compute for the deeper reasoning they describe. iOS 27 lets an app request how hard the server model should think, and only one of the paths that write an answer was asking. The most common one was not, so those two modes often ran at the standard effort. All of them ask now. Expect them to take longer and to use more of your daily Private Cloud Compute allowance than they did.
+• iOS 27 lets an app tell the server model how hard to think, and only one of the paths that write an answer was asking. The most common one was not, so those two modes often ran at ordinary effort while describing themselves as doing more. All of them ask now.
 
-• How It Works and the About screen said the app asks before sending to Private Cloud Compute, on builds that could not send anything. They now describe the build you are running, and so do the built-in guides, the Glossary and the Settings capability list.
+• Expect both modes to take longer than they did in 5.1, and to use more of your daily Private Cloud Compute allowance.
+
+
+A CORRECTION FROM 5.1
+
+• How It Works and the About screen told every iOS 26 user that the app asks before sending a question to Private Cloud Compute. Those builds could not send anything anywhere. Both screens now describe the build you are actually running, and so do the built-in guides, the Glossary and the Settings capability list.
+
+
+Everything except that one writing step still runs on your device.
