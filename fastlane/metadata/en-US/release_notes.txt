@@ -15,4 +15,6 @@ Every release since 4.6 has carried Apple's Private Cloud Compute support compil
 
 ALSO IN THIS RELEASE
 
+• Deep Think and Maximum now ask Private Cloud Compute for the deeper reasoning they describe. iOS 27 lets an app request how hard the server model should think, and only one of the paths that write an answer was asking. The most common one was not, so those two modes often ran at the standard effort. All of them ask now. Expect them to take longer and to use more of your daily Private Cloud Compute allowance than they did.
+
 • How It Works and the About screen said the app asks before sending to Private Cloud Compute, on builds that could not send anything. They now describe the build you are running, and so do the built-in guides, the Glossary and the Settings capability list.
