@@ -7,8 +7,8 @@
 
 import CoreML
 import Foundation
-import os
 import NaturalLanguage
+import os
 
 #if canImport(UIKit)
     import UIKit
@@ -29,7 +29,9 @@ import NaturalLanguage
 /// This abstraction enables switching between Foundation Models and Core ML
 protocol LLMService {
     /// Generate a response given a prompt and optional context
-    func generate(prompt: String, context: String?, config: InferenceConfig) async throws
+    func generate(
+        prompt: String, context: String?, config: InferenceConfig
+    ) async throws
         -> LLMResponse
 
     /// Check if the service is available on the current device
@@ -129,8 +131,8 @@ struct LLMResponse {
     let tokensGenerated: Int
     let timeToFirstToken: TimeInterval?
     let totalTime: TimeInterval
-    let modelName: String? // Actual model used (includes execution location)
-    let toolCallsMade: Int // Number of tool calls executed (for agentic RAG metrics)
+    let modelName: String?  // Actual model used (includes execution location)
+    let toolCallsMade: Int  // Number of tool calls executed (for agentic RAG metrics)
     let structuredRAGGeneration: StructuredRAGGeneration?
     let executionReceipt: ModelExecutionReceipt?
 
@@ -217,7 +219,8 @@ struct LLMResponse {
             session = nil
             pendingTranscript = transcript
 
-            Log.info("[AppleFM] Queued transcript with \(transcript.count) entries for session restoration", category: .llm)
+            Log.info(
+                "[AppleFM] Queued transcript with \(transcript.count) entries for session restoration", category: .llm)
             return true
         }
 
@@ -281,7 +284,7 @@ struct LLMResponse {
             switch model.availability {
             case .available:
                 return nil
-            case let .unavailable(reason):
+            case .unavailable(let reason):
                 switch reason {
                 case .deviceNotEligible:
                     return "Device not eligible (requires A17 Pro+ or M-series chip)"
@@ -320,7 +323,7 @@ struct LLMResponse {
         static var onDeviceContextWindowSize: Int {
             return 4096
         }
-        
+
         /// Conservative PCC context-window value for synchronous compatibility callers.
         /// Runtime routing obtains the live SDK value asynchronously through
         /// `LiveFoundationModelCapabilityProvider`.
@@ -363,19 +366,19 @@ struct LLMResponse {
             var description = "Session Transcript (\(transcript.count) entries):\n"
             for (index, entry) in transcript.enumerated() {
                 switch entry {
-                case let .instructions(inst):
+                case .instructions(let inst):
                     description += "[\(index + 1)] Instructions: \(String(describing: inst).prefix(80))...\n"
-                case let .prompt(prompt):
+                case .prompt(let prompt):
                     description += "[\(index + 1)] Prompt: \(String(describing: prompt).prefix(80))...\n"
-                case let .response(resp):
+                case .response(let resp):
                     description += "[\(index + 1)] Response: \(String(describing: resp).prefix(80))...\n"
-                case let .toolCalls(calls):
+                case .toolCalls(let calls):
                     description += "[\(index + 1)] ToolCalls: \(calls.count) call(s)\n"
-                case let .toolOutput(output):
+                case .toolOutput(let output):
                     description += "[\(index + 1)] ToolOutput: \(String(describing: output).prefix(80))...\n"
                 #if compiler(>=6.4)
-                case let .reasoning(reasoning):
-                    description += "[\(index + 1)] Reasoning: \(String(describing: reasoning).prefix(80))...\n"
+                    case .reasoning(let reasoning):
+                        description += "[\(index + 1)] Reasoning: \(String(describing: reasoning).prefix(80))...\n"
                 #endif
                 @unknown default:
                     description += "[\(index + 1)] Unknown entry type\n"
@@ -430,10 +433,11 @@ struct LLMResponse {
         ) -> Data? {
             var issues: [LanguageModelFeedback.Issue] = []
             if let category = category {
-                issues.append(LanguageModelFeedback.Issue(
-                    category: category,
-                    explanation: explanation
-                ))
+                issues.append(
+                    LanguageModelFeedback.Issue(
+                        category: category,
+                        explanation: explanation
+                    ))
             }
             return logFeedback(sentiment: .negative, issues: issues)
         }
@@ -477,11 +481,15 @@ struct LLMResponse {
                 session.prewarm(promptPrefix: ragPromptPrefix)
 
                 let loadTime = Date().timeIntervalSince(startTime)
-                Log.info("[Warm-up] Foundation Model preloaded in \(String(format: "%.2f", loadTime))s (using prewarm API)", category: .llm)
+                Log.info(
+                    "[Warm-up] Foundation Model preloaded in \(String(format: "%.2f", loadTime))s (using prewarm API)",
+                    category: .llm)
 
             } catch {
                 let failTime = Date().timeIntervalSince(startTime)
-                Log.warning("[Warm-up] Model preload failed after \(String(format: "%.2f", failTime))s: \(error)", category: .llm)
+                Log.warning(
+                    "[Warm-up] Model preload failed after \(String(format: "%.2f", failTime))s: \(error)",
+                    category: .llm)
             }
         }
 
@@ -534,7 +542,9 @@ struct LLMResponse {
         }
 
         @MainActor
-        func generate(prompt: String, context: String?, config: InferenceConfig) async throws
+        func generate(
+            prompt: String, context: String?, config: InferenceConfig
+        ) async throws
             -> LLMResponse
         {
             let __spGenerate = PipelineSignposts.synthesis.beginInterval("Generate")
@@ -542,7 +552,9 @@ struct LLMResponse {
             // Verify the current locale is supported before generation
             if !supportsCurrentLocale {
                 let currentLocale = Locale.current.identifier
-                Log.warning("Current locale '\(currentLocale)' not supported by Apple Intelligence — generation may produce degraded output", category: .llm)
+                Log.warning(
+                    "Current locale '\(currentLocale)' not supported by Apple Intelligence — generation may produce degraded output",
+                    category: .llm)
             }
 
             // Force statelessness
@@ -608,7 +620,8 @@ struct LLMResponse {
             // Use the session handed back by ensureSession. Re-reading the
             // shared `session` property here raced with reentrant generate
             // calls during multi-session reasoning (see ensureSession).
-            let (actualRoute, session) = try ensureSession(route: targetRoute, systemPrompt: config.systemPrompt, disableTools: config.disableTools)
+            let (actualRoute, session) = try ensureSession(
+                route: targetRoute, systemPrompt: config.systemPrompt, disableTools: config.disableTools)
 
             let executionBasedModelName: String
             switch actualRoute {
@@ -633,7 +646,7 @@ struct LLMResponse {
                         return "onDevice"
                     }(),
                     "planID": config.modelExecutionPlan?.id.uuidString ?? "direct",
-                    "intendedPath": config.modelExecutionPlan?.intendedTarget.rawValue ?? "direct"
+                    "intendedPath": config.modelExecutionPlan?.intendedTarget.rawValue ?? "direct",
                 ]
             )
 
@@ -646,7 +659,7 @@ struct LLMResponse {
                     "maxTokens": "\(config.maxTokens)",
                     "pccAllowed": "\(config.allowPrivateCloudCompute)",
                     "execPref": "\(config.executionContext)",
-                    "route": "\(actualRoute)"
+                    "route": "\(actualRoute)",
                 ]
             )
 
@@ -654,17 +667,22 @@ struct LLMResponse {
             var responseText = ""
             var tokenCount = 0
             var firstTokenTime: TimeInterval?
-            
+
             let actualExecutionLocation: String
-            
+
             switch actualRoute {
             case .onDevice:
                 actualExecutionLocation = "📱 On-Device"
             case .onDeviceAdvanced:
                 actualExecutionLocation = "📱 On-Device"
             case .privateCloudCompute(let reasoning):
-                actualExecutionLocation = "☁️ Private Cloud Compute (Server)"
-                _ = reasoning
+                // The reasoning level is part of the route, so the location string names it.
+                // Section 8 of the source of truth permits public target names and reason codes
+                // in telemetry and forbids reasoning *content*; a level is the former.
+                actualExecutionLocation =
+                    reasoning == .none
+                    ? "☁️ Private Cloud Compute (Server)"
+                    : "☁️ Private Cloud Compute (Server, \(reasoning.rawValue) reasoning)"
             case .automatic:
                 actualExecutionLocation = "Unknown"
             }
@@ -684,11 +702,13 @@ struct LLMResponse {
             case .greedy:
                 samplingMode = .greedy
             case .topK:
-                samplingMode = config.topK > 0
+                samplingMode =
+                    config.topK > 0
                     ? .random(top: config.topK, seed: config.seed)
                     : nil
             case .topP:
-                samplingMode = (config.topP > 0.0 && config.topP < 1.0)
+                samplingMode =
+                    (config.topP > 0.0 && config.topP < 1.0)
                     ? .random(probabilityThreshold: Double(config.topP), seed: config.seed)
                     : nil
             }
@@ -747,43 +767,38 @@ struct LLMResponse {
             }
 
             #if compiler(>=6.4)
-            let options = GenerationOptions(
-                samplingMode: effectiveSampling,
-                temperature: effectiveTemperature,
-                maximumResponseTokens: config.maxTokens > 0 ? config.maxTokens : nil
-            )
+                let options = GenerationOptions(
+                    samplingMode: effectiveSampling,
+                    temperature: effectiveTemperature,
+                    maximumResponseTokens: config.maxTokens > 0 ? config.maxTokens : nil
+                )
             #else
-            let options = GenerationOptions(
-                sampling: effectiveSampling,
-                temperature: effectiveTemperature,
-                maximumResponseTokens: config.maxTokens > 0 ? config.maxTokens : nil
-            )
+                let options = GenerationOptions(
+                    sampling: effectiveSampling,
+                    temperature: effectiveTemperature,
+                    maximumResponseTokens: config.maxTokens > 0 ? config.maxTokens : nil
+                )
             #endif
 
             let responseStream: LanguageModelSession.ResponseStream<String>
             #if compiler(>=6.4)
-            if #available(iOS 27.0, macOS 27.0, *),
-               case let .privateCloudCompute(reasoning) = actualRoute,
-               reasoning != .none
-            {
-                let reasoningLevel: FoundationModels.ContextOptions.ReasoningLevel
-                switch reasoning {
-                case .deep: reasoningLevel = .deep
-                case .moderate: reasoningLevel = .moderate
-                case .light: reasoningLevel = .light
-                case .none: reasoningLevel = .light
+                // The mapping lives on the route (see `AppleFoundationModelRoute.reasoningLevel`)
+                // so that this site and the structured and continuation sites cannot drift. The
+                // old inline switch here carried an unreachable `case .none` behind a guard that
+                // had already excluded it.
+                if #available(iOS 27.0, macOS 27.0, *),
+                    let contextOptions = actualRoute.contextOptions()
+                {
+                    responseStream = session.streamResponse(
+                        to: fullPrompt,
+                        options: options,
+                        contextOptions: contextOptions
+                    )
+                } else {
+                    responseStream = session.streamResponse(to: fullPrompt, options: options)
                 }
-                let contextOptions = FoundationModels.ContextOptions(reasoningLevel: reasoningLevel)
-                responseStream = session.streamResponse(
-                    to: fullPrompt,
-                    options: options,
-                    contextOptions: contextOptions
-                )
-            } else {
-                responseStream = session.streamResponse(to: fullPrompt, options: options)
-            }
             #else
-            responseStream = session.streamResponse(to: fullPrompt, options: options)
+                responseStream = session.streamResponse(to: fullPrompt, options: options)
             #endif
 
             var snapshotCount = 0
@@ -816,7 +831,9 @@ struct LLMResponse {
                         await MainActor.run { DSHaptics.generationStarted() }
 
                         if let ttft = firstTokenTime {
-                            Log.info("[FM] First token in \(String(format: "%.2f", ttft))s (\(actualExecutionLocation))", category: .llm)
+                            Log.info(
+                                "[FM] First token in \(String(format: "%.2f", ttft))s (\(actualExecutionLocation))",
+                                category: .llm)
                         }
                     }
 
@@ -828,12 +845,12 @@ struct LLMResponse {
                             let previousLength = responseText.count
                             responseText = snapshot.content
                             let newChars = responseText.count - previousLength
-                            
+
                             if newChars > 0 {
                                 let chunk = String(responseText.suffix(newChars))
                                 LLMStreamingContext.emit(text: chunk, isFinal: false)
                             }
-                            
+
                         default:
                             // For other entry types, we don't stream to the chat bubble yet
                             break
@@ -886,11 +903,12 @@ struct LLMResponse {
                     category: .llm
                 )
 
-                let mapped = FoundationModelErrorMapper.mapError(error, isStructured: false, estimatedTokens: estimatedTokens)
+                let mapped = FoundationModelErrorMapper.mapError(
+                    error, isStructured: false, estimatedTokens: estimatedTokens)
                 switch mapped {
-                case let .throwError(mappedError):
+                case .throwError(let mappedError):
                     throw mappedError
-                case let .setFlags(violation, unsupported):
+                case .setFlags(let violation, let unsupported):
                     guardrailViolation = violation
                     unsupportedLanguage = unsupported
                 }
@@ -931,26 +949,26 @@ struct LLMResponse {
                 ) {
                     HardwareTelemetryReporter.sustain(.llmInference, active: false)
                     switch mapped {
-                    case let .throwError(mappedError):
+                    case .throwError(let mappedError):
                         throw mappedError
-                    case let .setFlags(violation, unsupported):
+                    case .setFlags(let violation, let unsupported):
                         guardrailViolation = violation
                         unsupportedLanguage = unsupported
                     }
                 } else {
 
-                let partial = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-                Log.error(
-                    "[FM] Non-GenerationError escaped generation:\n"
-                        + "     type: \(type(of: error))\n"
-                        + "     case: \(String(describing: error))\n"
-                        + "     desc: \(error.localizedDescription)\n"
-                        + "     estimatedTokens: \(estimatedTokens) maxTokens: \(config.maxTokens)\n"
-                        + "     partialTextChars: \(partial.count)\n"
-                        + "     partialText: \(partial.isEmpty ? "<nothing streamed>" : String(partial.prefix(400)))",
-                    category: .llm
-                )
-                throw error
+                    let partial = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Log.error(
+                        "[FM] Non-GenerationError escaped generation:\n"
+                            + "     type: \(type(of: error))\n"
+                            + "     case: \(String(describing: error))\n"
+                            + "     desc: \(error.localizedDescription)\n"
+                            + "     estimatedTokens: \(estimatedTokens) maxTokens: \(config.maxTokens)\n"
+                            + "     partialTextChars: \(partial.count)\n"
+                            + "     partialText: \(partial.isEmpty ? "<nothing streamed>" : String(partial.prefix(400)))",
+                        category: .llm
+                    )
+                    throw error
                 }
             }
 
@@ -963,17 +981,18 @@ struct LLMResponse {
             // Handle generation errors with user-friendly messages
             if guardrailViolation {
                 throw LLMError.generationFailed(
-                    "Apple's safety guardrails prevented this response. " +
-                        "Please rephrase your question to avoid sensitive topics."
+                    "Apple's safety guardrails prevented this response. "
+                        + "Please rephrase your question to avoid sensitive topics."
                 )
             }
 
             if unsupportedLanguage {
-                let supportedList = supportedLanguages.prefix(5).map { $0.languageCode?.identifier ?? "?" }.joined(separator: ", ")
+                let supportedList = supportedLanguages.prefix(5).map { $0.languageCode?.identifier ?? "?" }.joined(
+                    separator: ", ")
                 throw LLMError.generationFailed(
-                    "Apple Intelligence couldn't process this query. " +
-                        "Try rephrasing with more context (e.g., 'Tell me about X' or 'What is X?'). " +
-                        "Supported languages: \(supportedList)."
+                    "Apple Intelligence couldn't process this query. "
+                        + "Try rephrasing with more context (e.g., 'Tell me about X' or 'What is X?'). "
+                        + "Supported languages: \(supportedList)."
                 )
             }
 
@@ -982,7 +1001,9 @@ struct LLMResponse {
             let totalTime = Date().timeIntervalSince(startTime)
             var finalTokenCount = responseText.split(separator: " ").count
 
-            Log.info("[FM] Generation complete: \(finalTokenCount) words in \(String(format: "%.2f", totalTime))s (\(actualExecutionLocation))", category: .llm)
+            Log.info(
+                "[FM] Generation complete: \(finalTokenCount) words in \(String(format: "%.2f", totalTime))s (\(actualExecutionLocation))",
+                category: .llm)
 
             // Using executionBasedModelName resolved at the start of generation
 
@@ -1006,6 +1027,7 @@ struct LLMResponse {
                     session: session,
                     currentResponse: responseText,
                     options: options,
+                    route: actualRoute,
                     config: config
                 )
                 if !continuedText.isEmpty {
@@ -1039,7 +1061,7 @@ struct LLMResponse {
                             target: actualTarget,
                             startedAt: startTime,
                             result: .succeeded
-                        ),
+                        )
                     ],
                     actualTarget: actualTarget,
                     completedTarget: actualTarget,
@@ -1070,7 +1092,9 @@ struct LLMResponse {
         ) async throws -> LLMResponse {
             if !supportsCurrentLocale {
                 let currentLocale = Locale.current.identifier
-                Log.warning("Current locale '\(currentLocale)' not supported by Apple Intelligence — structured generation may degrade", category: .llm)
+                Log.warning(
+                    "Current locale '\(currentLocale)' not supported by Apple Intelligence — structured generation may degrade",
+                    category: .llm)
             }
 
             session = nil
@@ -1080,11 +1104,12 @@ struct LLMResponse {
 
             var structuredConfig = config
             structuredConfig.disableTools = true
-            
+
             // On-device ratio unconditionally, for the reason documented at the
             // streaming call site above: this number is compared against the
             // on-device context limit, so it must be in on-device tokens.
-            let estimatedTokens = FoundationModelTokenBudget.estimateTokens(for: prompt + context, isAppleFMOnDevice: true)
+            let estimatedTokens = FoundationModelTokenBudget.estimateTokens(
+                for: prompt + context, isAppleFMOnDevice: true)
             let queryType: FoundationModelRoutePolicy.QueryType
             switch config.qualityMode.canonical {
             case .standard: queryType = .standard
@@ -1097,9 +1122,10 @@ struct LLMResponse {
                 estimatedContextTokens: estimatedTokens,
                 config: config
             )
-            
+
             // Same reentrancy fix as the streaming path above.
-            let (actualRoute, session) = try ensureSession(route: targetRoute, systemPrompt: structuredConfig.systemPrompt, disableTools: true)
+            let (actualRoute, session) = try ensureSession(
+                route: targetRoute, systemPrompt: structuredConfig.systemPrompt, disableTools: true)
 
             let executionBasedModelName: String
             switch actualRoute {
@@ -1124,7 +1150,7 @@ struct LLMResponse {
                         return "onDevice"
                     }(),
                     "planID": config.modelExecutionPlan?.id.uuidString ?? "direct",
-                    "intendedPath": config.modelExecutionPlan?.intendedTarget.rawValue ?? "direct"
+                    "intendedPath": config.modelExecutionPlan?.intendedTarget.rawValue ?? "direct",
                 ]
             )
 
@@ -1136,6 +1162,7 @@ struct LLMResponse {
                 context: context,
                 config: config,
                 sourceCount: sourceCount,
+                route: actualRoute,
                 mode: mode
             )
             let actualTarget: ModelExecutionTarget
@@ -1154,7 +1181,7 @@ struct LLMResponse {
                             target: actualTarget,
                             startedAt: generationStartedAt,
                             result: .succeeded
-                        ),
+                        )
                     ],
                     actualTarget: actualTarget,
                     completedTarget: actualTarget,
@@ -1182,7 +1209,9 @@ struct LLMResponse {
 
             let terminalPunctuation: Set<Character> = [".", "!", "?", ":", ";", "\"", "'", ")", "]", "}"]
             guard let lastChar = trimmed.last else { return false }
-            let lastLine = trimmed.components(separatedBy: .newlines).last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
+            let lastLine =
+                trimmed.components(separatedBy: .newlines).last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? trimmed
             let listPrefixes = ["- ", "* ", "• "]
             let incompleteMarkers: Set<String> = ["and", "or", "but", "the", "a", "an", "to", "of"]
             let lastWord = String(trimmed.split(separator: " ").last ?? "").lowercased()
@@ -1244,7 +1273,8 @@ struct LLMResponse {
 
         private func wordCountLooksLikeStandaloneValue(_ text: String) -> Bool {
             text.range(
-                of: #"^\s*(?:[A-Z]{2,}|\d+(?:[.,]\d+)?(?:\s*[A-Za-z%/.-]+){0,3}|[A-Za-z]+\s*:\s*\d+(?:[.,]\d+)?(?:\s*[A-Za-z%/.-]+){0,3})(?:\s*\[[^\]]+\])?\s*$"#,
+                of:
+                    #"^\s*(?:[A-Z]{2,}|\d+(?:[.,]\d+)?(?:\s*[A-Za-z%/.-]+){0,3}|[A-Za-z]+\s*:\s*\d+(?:[.,]\d+)?(?:\s*[A-Za-z%/.-]+){0,3})(?:\s*\[[^\]]+\])?\s*$"#,
                 options: [.regularExpression, .caseInsensitive]
             ) != nil
         }
@@ -1290,25 +1320,46 @@ struct LLMResponse {
         }
 
         /// Continues generation from where it left off using the session's context
+        ///
+        /// `route` is threaded in so the continuation asks for the same reasoning level as the
+        /// answer it is continuing. Without it, a Deep Think answer that ran out of tokens
+        /// finished at Apple's default effort, and the seam was invisible in the output.
         private func continueGeneration(
             session: LanguageModelSession,
             currentResponse: String,
             options: GenerationOptions,
+            route: AppleFoundationModelRoute,
             config _: InferenceConfig
         ) async throws -> String {
             // Use a simple continuation prompt
-            let continuationPrompt = "Continue exactly from the last incomplete sentence or bullet. Do not restart the answer or repeat earlier content."
+            let continuationPrompt =
+                "Continue exactly from the last incomplete sentence or bullet. Do not restart the answer or repeat earlier content."
 
             var continuedText = ""
-            let maxContinuations = 2 // Reduced from 3 — fewer chances to loop
+            let maxContinuations = 2  // Reduced from 3 — fewer chances to loop
             var continuationCount = 0
-            let maxContinuationChars = 1600 // Hard cap on total continuation length
+            let maxContinuationChars = 1600  // Hard cap on total continuation length
 
             while continuationCount < maxContinuations {
                 continuationCount += 1
 
                 do {
-                    let stream = session.streamResponse(to: continuationPrompt, options: options)
+                    let stream: LanguageModelSession.ResponseStream<String>
+                    #if compiler(>=6.4)
+                        if #available(iOS 27.0, macOS 27.0, *),
+                            let contextOptions = route.contextOptions()
+                        {
+                            stream = session.streamResponse(
+                                to: continuationPrompt,
+                                options: options,
+                                contextOptions: contextOptions
+                            )
+                        } else {
+                            stream = session.streamResponse(to: continuationPrompt, options: options)
+                        }
+                    #else
+                        stream = session.streamResponse(to: continuationPrompt, options: options)
+                    #endif
                     var chunkText = ""
 
                     for try await snapshot in stream {
@@ -1327,7 +1378,7 @@ struct LLMResponse {
                     }
 
                     if chunkText.isEmpty {
-                        break // No more content
+                        break  // No more content
                     }
 
                     // CRITICAL: Check if continuation is just repeating the original response
@@ -1350,7 +1401,9 @@ struct LLMResponse {
                         break
                     }
 
-                    Log.debug("[FM] Continuation \(continuationCount) added \(chunkText.count) chars, still incomplete", category: .llm)
+                    Log.debug(
+                        "[FM] Continuation \(continuationCount) added \(chunkText.count) chars, still incomplete",
+                        category: .llm)
 
                 } catch {
                     Log.warning("[FM] Continuation failed: \(error)", category: .llm)
@@ -1443,7 +1496,9 @@ struct LLMResponse {
             let keptNonEmpty = result.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
             let linePassTooAggressive = keptNonEmpty < 3 && totalNonEmpty > 5
             if linePassTooAggressive {
-                Log.warning("[FM] Deduplication line-pass aggressive (\(dedupCount) of \(totalNonEmpty) lines) — using sentence-pass cleanup", category: .llm)
+                Log.warning(
+                    "[FM] Deduplication line-pass aggressive (\(dedupCount) of \(totalNonEmpty) lines) — using sentence-pass cleanup",
+                    category: .llm)
             }
 
             if dedupCount > 0 {
@@ -1495,7 +1550,7 @@ struct LLMResponse {
             if let trailingMatch = output.range(of: trailingBoldPattern, options: .regularExpression) {
                 let candidate = String(output[trailingMatch])
                 // Only strip if it's truly unclosed — no closing ** in the candidate
-                let innerContent = candidate.dropFirst(2) // Remove leading **
+                let innerContent = candidate.dropFirst(2)  // Remove leading **
                 if !innerContent.contains("**") {
                     output.replaceSubrange(trailingMatch, with: "")
                 }
@@ -1519,7 +1574,8 @@ struct LLMResponse {
             // Pattern 1: Inline bullet "... situations: * Cruise Control"
             // Matches ": * " or ". * " followed by a word character — these are NEVER valid markdown
             let inlineBulletPattern = #"(?::|\.)\s\*\s(?=\w)"#
-            let inlineBulletCount = (try? NSRegularExpression(pattern: inlineBulletPattern))?
+            let inlineBulletCount =
+                (try? NSRegularExpression(pattern: inlineBulletPattern))?
                 .numberOfMatches(in: output, range: NSRange(output.startIndex..., in: output)) ?? 0
             if inlineBulletCount >= 1 {
                 // Replace ": * Word" with ": Word" and ". * Word" with ". Word"
@@ -1537,7 +1593,8 @@ struct LLMResponse {
             // Pattern 3: Mid-sentence standalone bullets " * Word" (space-star-space-word)
             // Only convert when preceded by non-whitespace (legitimate bullets start lines)
             let midBulletPattern = #"(?<=\S) \* (?=[A-Z\w])"#
-            let midCount = (try? NSRegularExpression(pattern: midBulletPattern))?
+            let midCount =
+                (try? NSRegularExpression(pattern: midBulletPattern))?
                 .numberOfMatches(in: output, range: NSRange(output.startIndex..., in: output)) ?? 0
             if midCount >= 2 {
                 output = output.replacingOccurrences(of: midBulletPattern, with: ". ", options: .regularExpression)
@@ -1577,7 +1634,9 @@ struct LLMResponse {
                     with: "$1",
                     options: .regularExpression
                 )
-                Log.info("[FM] Nuclear bold strip: \(boldCount) spans (density: \(String(format: "%.1f", boldDensity))%)", category: .llm)
+                Log.info(
+                    "[FM] Nuclear bold strip: \(boldCount) spans (density: \(String(format: "%.1f", boldDensity))%)",
+                    category: .llm)
                 return stripped
             }
 
@@ -1611,7 +1670,9 @@ struct LLMResponse {
 
             let stripped = boldCount - uniqueKept
             if stripped > 0 {
-                Log.info("[FM] Bold normalization: kept \(uniqueKept) unique, stripped \(stripped) duplicates (was \(boldCount) total, density: \(String(format: "%.1f", boldDensity))%)", category: .llm)
+                Log.info(
+                    "[FM] Bold normalization: kept \(uniqueKept) unique, stripped \(stripped) duplicates (was \(boldCount) total, density: \(String(format: "%.1f", boldDensity))%)",
+                    category: .llm)
             }
 
             return result
@@ -1770,7 +1831,7 @@ struct LLMResponse {
                 "have", "has", "had", "do", "does", "did", "will", "would", "could",
                 "should", "may", "might", "can", "to", "of", "in", "for", "on", "with",
                 "at", "by", "from", "as", "into", "through", "it", "its", "that", "this",
-                "or", "and", "but", "if", "not", "no", "so", "than", "also", "only"
+                "or", "and", "but", "if", "not", "no", "so", "than", "also", "only",
             ]
 
             // Split by lines first to preserve markdown structure
@@ -1882,7 +1943,8 @@ struct LLMResponse {
             let dominantSentence = representative[dominantKey] ?? ""
             guard !dominantSentence.isEmpty else { return text }
 
-            var output = text.replacingOccurrences(of: dominantSentence, with: "", options: [.caseInsensitive, .diacriticInsensitive])
+            var output = text.replacingOccurrences(
+                of: dominantSentence, with: "", options: [.caseInsensitive, .diacriticInsensitive])
             output = output.replacingOccurrences(of: "\n\n\n", with: "\n\n")
             output = output.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1902,14 +1964,14 @@ struct LLMResponse {
         }
     }
 
-    // NOTE: Private Cloud Compute (PCC) is AUTOMATIC in Foundation Models
-    // The system intelligently decides when to use on-device vs. Apple's PCC servers
-    // based on query complexity and available resources. PCC provides:
-    // - Apple Silicon servers (same architecture as device)
-    // - Cryptographic zero-retention guarantee
-    // - End-to-end encryption
-    // - Seamless fallback for complex queries
-    // You don't need a separate service - it's built into AppleFoundationLLMService above
+// NOTE: Private Cloud Compute (PCC) is AUTOMATIC in Foundation Models
+// The system intelligently decides when to use on-device vs. Apple's PCC servers
+// based on query complexity and available resources. PCC provides:
+// - Apple Silicon servers (same architecture as device)
+// - Cryptographic zero-retention guarantee
+// - End-to-end encryption
+// - Seamless fallback for complex queries
+// You don't need a separate service - it's built into AppleFoundationLLMService above
 
 #endif
 
@@ -1922,45 +1984,45 @@ class ScreenshotMockLLMService: LLMService {
     var toolHandler: RAGToolHandler?
 
     var isAvailable: Bool { true }
-    var modelName: String { "Apple Intelligence" } // Display as if real
+    var modelName: String { "Apple Intelligence" }  // Display as if real
 
     /// Check if screenshot mode is enabled via launch arguments
     static var isScreenshotMode: Bool {
         #if DEBUG
-        return CommandLine.arguments.contains("--screenshot")
-            || CommandLine.arguments.contains("screenshot")
+            return CommandLine.arguments.contains("--screenshot")
+                || CommandLine.arguments.contains("screenshot")
         #else
-        return false
+            return false
         #endif
     }
 
     private let demoResponses: [String: String] = [
         "roadmap": """
-            Based on your roadmap brief, OpenIntelligence is focused on a clear prototype path:
+        Based on your roadmap brief, OpenIntelligence is focused on a clear prototype path:
 
-            **Ingestion**: improve file import, parsing coverage, and document normalization.
-            **Retrieval**: strengthen hybrid search, re-ranking, and library-scoped context selection.
-            **Review**: make citations, source snippets, and warning signals easier to inspect.
+        **Ingestion**: improve file import, parsing coverage, and document normalization.
+        **Retrieval**: strengthen hybrid search, re-ranking, and library-scoped context selection.
+        **Review**: make citations, source snippets, and warning signals easier to inspect.
 
-            The implementation emphasizes local-first files, source-backed answers, and visible retrieval behavior.
-            """,
+        The implementation emphasizes local-first files, source-backed answers, and visible retrieval behavior.
+        """,
         "architecture": """
-            The RAG implementation uses several key components:
+        The RAG implementation uses several key components:
 
-            1. **DocumentProcessor**: Semantic chunking with 350-word targets and 17% overlap
-            2. **EmbeddingService**: 384-dimensional vectors via CoreML
-            3. **HybridSearch**: Combines vector similarity with BM25 for better recall
-            4. **MMR Diversification**: Ensures varied, relevant results
+        1. **DocumentProcessor**: Semantic chunking with 350-word targets and 17% overlap
+        2. **EmbeddingService**: 384-dimensional vectors via CoreML
+        3. **HybridSearch**: Combines vector similarity with BM25 for better recall
+        4. **MMR Diversification**: Ensures varied, relevant results
 
-            Performance targets include <100ms per chunk embedding and sub-second query responses.
-            """,
+        Performance targets include <100ms per chunk embedding and sub-second query responses.
+        """,
         "default": """
-            I found relevant information in your documents. Here's what I discovered:
+        I found relevant information in your documents. Here's what I discovered:
 
-            Your knowledge base contains detailed documentation about the system architecture, retrieval pipeline, and technical implementation. The hybrid search approach combines semantic understanding with keyword matching for comprehensive retrieval.
+        Your knowledge base contains detailed documentation about the system architecture, retrieval pipeline, and technical implementation. The hybrid search approach combines semantic understanding with keyword matching for comprehensive retrieval.
 
-            Would you like me to dive deeper into any specific aspect?
-            """
+        Would you like me to dive deeper into any specific aspect?
+        """,
     ]
 
     init() {
@@ -1975,7 +2037,9 @@ class ScreenshotMockLLMService: LLMService {
         let responseKey: String
         if lowercasePrompt.contains("roadmap") || lowercasePrompt.contains("plan") || lowercasePrompt.contains("next") {
             responseKey = "roadmap"
-        } else if lowercasePrompt.contains("architecture") || lowercasePrompt.contains("technical") || lowercasePrompt.contains("rag") {
+        } else if lowercasePrompt.contains("architecture") || lowercasePrompt.contains("technical")
+            || lowercasePrompt.contains("rag")
+        {
             responseKey = "architecture"
         } else {
             responseKey = "default"
@@ -1999,7 +2063,7 @@ class ScreenshotMockLLMService: LLMService {
         LLMStreamingContext.emit(text: responseText, isFinal: true)
 
         let totalTime = Date().timeIntervalSince(startTime)
-        let tokensGenerated = words.count + 10 // Approximate token count
+        let tokensGenerated = words.count + 10  // Approximate token count
 
         return LLMResponse(
             text: responseText,
@@ -2023,15 +2087,16 @@ class AppleFoundationLLMServiceUnavailable: LLMService {
     var modelName: String { "Apple Intelligence (Unavailable)" }
 
     init() {
-        Log.warning("AppleFoundationLLMServiceUnavailable stub initialized - Apple Intelligence is required", category: .llm)
+        Log.warning(
+            "AppleFoundationLLMServiceUnavailable stub initialized - Apple Intelligence is required", category: .llm)
     }
 
     func generate(prompt _: String, context _: String?, config _: InferenceConfig) async throws -> LLMResponse {
         #if targetEnvironment(simulator)
             throw LLMError.generationFailed(
-                "Apple Intelligence requires a physical device with Apple Silicon: " +
-                    "iPhone (A17 Pro+), iPad (M1+), or Mac (M1+). " +
-                    "The iOS Simulator cannot run Foundation Models."
+                "Apple Intelligence requires a physical device with Apple Silicon: "
+                    + "iPhone (A17 Pro+), iPad (M1+), or Mac (M1+). "
+                    + "The iOS Simulator cannot run Foundation Models."
             )
         #else
             throw LLMError.modelUnavailable
@@ -2064,15 +2129,15 @@ enum LLMError: LocalizedError {
         switch self {
         case .modelUnavailable:
             return "LLM model is not available on this device"
-        case let .generationFailed(message):
+        case .generationFailed(let message):
             return "Text generation failed: \(message)"
         case .notImplemented:
             return "Feature not yet implemented"
         case .contextWindowExceeded:
             return "The context window size was exceeded."
-        case let .rateLimited(message):
+        case .rateLimited(let message):
             return "Rate limited: \(message)"
-        case let .concurrentRequests(message):
+        case .concurrentRequests(let message):
             return "Concurrent request blocked: \(message)"
         }
     }
