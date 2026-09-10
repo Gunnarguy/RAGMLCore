@@ -1,15 +1,67 @@
 # Current State
 
-Updated: 2026-09-02, 22:50
+Updated: 2026-09-10, 09:20
 Branch/worktree: main (primary checkout)
-Last verified commit: a70fab8
+Last verified commit: d1ece6a
 
 ## Objective
 
-**5.2, the Private Cloud Compute release, is staged so that release day is attach and submit.**
-5.1 is recorded as shipped on both platforms. The app is otherwise on the back burner.
+**5.2, the Private Cloud Compute release, is staged and now testable on TestFlight.** The sale
+that accompanies it is scheduled and live in App Store Connect. Two things block a real 5.2
+submission: Apple has not put the release Xcode 27 on Xcode Cloud, and this repository cannot
+currently run its own test suite.
 
 ## Status
+
+### 2026-09-10 session: what changed, and what is now blocked
+
+**A PCC-capable 5.2 is already on TestFlight.** Build 444, version 5.2, both iOS and macOS,
+`internalBuildState: IN_BETA_TESTING`, uploaded 2026-09-09 16:02 PDT. It was produced by Xcode
+Cloud run #444 from commit `c45e078`; every push to `main` triggers a build, so this was
+incidental rather than deliberate. It genuinely carries Private Cloud Compute: `ci_post_xcodebuild.sh`
+Gate 1 exits 1 for any version at or above 5.2 with zero `PrivateCloudCompute` symbols, and it
+requires a non-zero `SystemLanguageModel` control first, so a passing 5.2 build is proof the
+symbols are linked. `[evidence_level: build_verified, confidence: exact]`
+
+**The machine can now run PCC.** macOS is 27.0 build 26A428, the release candidate, updated
+2026-09-10. The iPhone 16 Pro Max was last seen on iOS 27.0 build 24A5418b, a beta. Xcode locally
+is still 26.6 (Swift 6.3.3) with the 27 beta 1 (27A5194q, Swift 6.4) alongside; `xcode-select`
+points at 26.6. Xcode Cloud still offers nothing newer than Xcode 27 beta 6, checked three times
+on 2026-09-10.
+
+**Shipped this session:** commit `d1ece6a`, reasoning level now reaches Apple on every path that
+produces a user answer. `ContextOptions.reasoningLevel` is a defaulted argument on every `respond`
+and `streamResponse` overload, so omitting it silently runs at Apple's default effort; one of
+twenty-five call sites passed it. Deep Think and Maximum will now be materially more expensive on
+the PCC path than they were.
+
+**BLOCKER: `xcodebuild test` cannot link the Engine target.** `OpenIntelligenceEngine` declares no
+`packageProductDependencies` while referencing `Tokenizers` symbols, so linking it standalone for
+the test action fails on `AutoTokenizer.from(directory:)`. Reproduced with the working tree
+stashed at `c45e078`, so it is not caused by recent work, and it survived both a clean
+`-derivedDataPath` and `xcodebuild -resolvePackageDependencies`. The suite passed earlier the same
+day, and the macOS 27 RC update happened in that window. **The fix needs `project.pbxproj`, a
+hard-boundary file.** Until it is fixed, no session can verify anything by test.
+
+**Verification that did run:** `bash scripts/build_simulator_smoke.sh` (green), and a Swift 6.4
+build with `DEVELOPER_DIR=/Applications/Xcode-beta.app` for `generic/platform=iOS` (green), which
+matters because the smoke build runs on Swift 6.3.3 where every `#if compiler(>=6.4)` branch
+compiles out and therefore proves nothing about PCC code. The Swift 6.4 binary links 8
+`ContextOptions`, 19 `PrivateCloudCompute` and 32 `SystemLanguageModel` symbols. Also green:
+`python3 scripts/secret_scan.py`, `scripts/check_icloud_conflicts.sh`,
+`zsh -ic 'python3 scripts/verify_sale_prices.py'`.
+
+**The launch sale is live in App Store Connect**, scheduled not running: Lifetime Cohort 59.99
+until 2026-09-15, 39.99 from 09-15 to 09-30, 59.99 from 09-30 with no end date. `LaunchSale.window`
+in the shipped source matches, and the paywall will read "ends September 29".
+
+### Correction to a claim made earlier in this session
+
+The Engine's code **does** ship inside the app. There is no `OpenIntelligenceEngine.framework` in
+the bundle and no `Frameworks/` directory; the Engine is linked into the app binary, which is why
+`nm` finds its symbols there. The link failure above is only about resolving the Engine as a
+standalone unit during the test action.
+
 
 **Shipped:** iOS 5.1 and macOS 5.1, both `READY_FOR_SALE` on 2026-09-02, build 433. Nothing is in
 review.
@@ -135,10 +187,25 @@ copy branches were parsed, built (the simulator build uses Xcode-beta, Swift 6.4
 
 ## Exact Next Action
 
-**Nothing today.** The routine runs at 09:00 daily. When it reports that Xcode 27 is on Xcode
-Cloud and the build is attached, run the two submit commands it prints. If the routine has not
-fired by the day after Apple's iOS 27 release, run step 1 by hand:
+**One command, and it is the blocker.** Ask the owner to name `project.pbxproj`, then add the
+`TransformersTokenizers` package product to the `OpenIntelligenceEngine` target so the suite can
+link. Nothing else in this repository can be verified by test until that is done.
 
 ```bash
-ruby scripts/xcode_cloud_toolchain.rb
+xcodebuild test -scheme OpenIntelligence -destination "platform=iOS Simulator,id=DA9536BA-F048-4352-92AA-66A7E1A464BA" -derivedDataPath /private/tmp/oi-build
 ```
+
+That destination is an iPhone 17 Pro on iOS 26.5. No iOS 27 simulator runtime is installed, so
+even a green suite does not exercise the `#if compiler(>=6.4)` paths. Installing Xcode 27 RC would
+provide one.
+
+**Not blocking, and available now:** build 444 is installable from TestFlight on this Mac, which
+runs macOS 27.0 RC. Opening it and asking a question is the only way to device-verify the
+reasoning-level change, and the cheapest observation is `Response.usage.reasoningTokenCount`,
+which the app does not currently read. Worth running this at the same time to settle whether
+Apple logs the route itself, which would make a planned logging change unnecessary:
+
+```bash
+log stream --style compact --predicate 'subsystem CONTAINS[c] "foundationmodel" OR subsystem CONTAINS[c] "privatecloud"'
+```
+
